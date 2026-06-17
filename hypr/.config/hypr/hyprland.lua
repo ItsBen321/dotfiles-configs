@@ -41,6 +41,26 @@ hl.monitor({
 	transform = 3,
 })
 
+-- Keep normal workspaces on the center monitor, with the side monitors
+-- reserved for fixed workspaces.
+for _, workspace in ipairs({ "1", "2", "3", "4", "5", "6", "7", "8" }) do
+	hl.workspace_rule({
+		workspace = workspace,
+		monitor = "DP-3",
+	})
+end
+
+hl.workspace_rule({
+	workspace = "9",
+	monitor = "HDMI-A-1",
+})
+
+hl.workspace_rule({
+	-- SUPER+0 maps to workspace 10 in Hyprland.
+	workspace = "10",
+	monitor = "DP-2",
+})
+
 ---------------------
 ---- MY PROGRAMS ----
 ---------------------
@@ -127,7 +147,7 @@ hl.config({
 
 		-- Change transparency of focused and unfocused windows
 		active_opacity = 1.0,
-		inactive_opacity = 0.8,
+		inactive_opacity = 0.9,
 
 		shadow = {
 			enabled = true,
