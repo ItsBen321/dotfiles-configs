@@ -1,0 +1,4 @@
+interface:
+  display_name: "Better Status"
+  short_description: "Summarize useful metrics and wait-time for the current Codex chat session."
+  default_prompt: "Show a better status summary for this chat session."

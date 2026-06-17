@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Log"
+  short_description: "Split, commit, and optionally document project changes"
+  default_prompt: "Use $git-log to review the active git repo, split changes into focused commits, and optionally update a local changelog when appropriate."

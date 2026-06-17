@@ -1,0 +1,4 @@
+interface:
+  display_name: "Summarize Context"
+  short_description: "Inventory what the agent currently has in context."
+  default_prompt: "Describe everything you currently have in context as a structured human-readable inventory."

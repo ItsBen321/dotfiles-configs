@@ -1,0 +1,4 @@
+interface:
+  display_name: "Godot GDScript"
+  short_description: "Godot and GDScript project workflow"
+  default_prompt: "Use $godot-gdscript to work on this Godot/GDScript task with the project wiki."

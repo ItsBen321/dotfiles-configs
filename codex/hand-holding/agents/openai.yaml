@@ -1,0 +1,6 @@
+interface:
+  display_name: "Hand-Holding"
+  short_description: "Snippet-by-snippet coding review"
+  default_prompt: "Use $hand-holding to implement this coding task snippet by snippet."
+policy:
+  allow_implicit_invocation: true

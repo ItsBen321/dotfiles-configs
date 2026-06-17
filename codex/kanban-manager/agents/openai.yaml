@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kanban Manager"
+  short_description: "Clean up a provided kanban board"
+  default_prompt: "Use $kanban-manager to review and clean up the kanban board at <path-to-board>."

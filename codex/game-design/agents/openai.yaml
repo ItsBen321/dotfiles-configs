@@ -1,0 +1,4 @@
+interface:
+  display_name: "Game Design"
+  short_description: "Vault-backed game concept design"
+  default_prompt: "Use $game-design to brainstorm and refine a game concept with the design wiki."

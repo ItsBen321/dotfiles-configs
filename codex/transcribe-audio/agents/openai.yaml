@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audio Transcription Skill"
+  short_description: "Transcribe voice memos and audio files"
+  default_prompt: "Use $transcribe-audio to locally transcribe this audio file and then output, save, or use the transcript as requested."
