@@ -87,6 +87,21 @@ hl.on("hyprland.start", function()
 	hl.exec_cmd("waybar & hyprpaper & flatpak run com.spotify.Client & flatpak run md.obsidian.Obsidian & discord") -- /home/ben/.local/bin/dynamic-wallpaper")
 end)
 
+-- window setups
+
+hl.window_rule({
+	match = { class = "spotify" },
+	workspace = 10,
+})
+hl.window_rule({
+	match = { class = "discord" },
+	workspace = 1,
+})
+hl.window_rule({
+	match = { class = "obsidian" },
+	workspace = 1,
+})
+
 -------------------------------
 ---- ENVIRONMENT VARIABLES ----
 -------------------------------
