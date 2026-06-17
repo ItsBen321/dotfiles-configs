@@ -4,7 +4,8 @@
   min-height: 0;
   padding-right: 2px;
   padding-left: 2px;
-  padding-bottom: 0; }
+  padding-bottom: 0px;
+}
 
 #waybar {
   background: transparent;
@@ -13,16 +14,16 @@
 }
 
 #workspaces {
-  border-radius: 5px;
-  margin: 0px;
+  border-radius: 1px;
+  margin: 2px;
   background: #101010;
-  margin-left: 8px;
+  margin-left: 2px;
 }
 
 #workspaces button {
   color: #babbf1;
   border-radius: 5px;
-  padding: 0.4rem;
+  padding: 0.2rem;
 }
 
 #workspaces button.active {
@@ -54,7 +55,7 @@ button {
 #custom-uptime,
 #custom-docker {
   background-color: #101010;
-  padding: 0.5rem 1rem;
+  padding: 0.2rem 1rem;
   margin: 2px 0;
 }
 

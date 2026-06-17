@@ -68,7 +68,7 @@ hl.workspace_rule({
 -- Set programs that you use
 local terminal = "kitty"
 local fileManager = "dolphin"
-local menu = "hyprlauncher"
+local menu = "rofi -show drun"
 local codex = "kitty --title Codex /home/ben/.local/bin/codex"
 local firefox = "firefox"
 
