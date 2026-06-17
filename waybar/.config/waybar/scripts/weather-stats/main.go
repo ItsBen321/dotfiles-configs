@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 )
 
 const WTTR_API_URL = "https://wttr.in"
+const WEATHER_LOCATION = "Sint-Niklaas,Belgium"
 
 var weatherIcons = map[string]string{
 	"Clear":             "󰖙",
@@ -137,13 +139,13 @@ func getIcon(condition string, code string) string {
 }
 
 func getWeather() (WaybarOutput, error) {
-	url := fmt.Sprintf("%s/?format=j1", WTTR_API_URL)
+	requestURL := fmt.Sprintf("%s/%s?format=j1", WTTR_API_URL, url.PathEscape(WEATHER_LOCATION))
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get(url)
+	resp, err := client.Get(requestURL)
 	if err != nil {
 		return WaybarOutput{}, err
 	}

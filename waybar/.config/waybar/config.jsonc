@@ -7,7 +7,8 @@
 
   "modules-right": [
     "pulseaudio",
-    "custom/uptime",
+    "custom/music",
+//    "custom/uptime",
     "backlight",
 //    "battery",
     "network",
@@ -36,8 +37,8 @@
     "escape": true,
     "interval": 5,
     "tooltip": false,
-    "exec": "playerctl metadata --format='{{ artist }} - {{ title }}'",
-    "on-click": "playerctl play-pause",
+    "exec": "playerctl -p spotify metadata --format='{{ artist }} - {{ title }}'",
+    "on-click": "playerctl -p spotify play-pause",
     "max-length": 50
   },
 
@@ -58,8 +59,9 @@
 
   "cpu": {
     "interval": 1,
-    "format": "  {icon0}{icon1}{icon2}{icon3} {usage:>2}%",
-    "format-icons": ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    "format": " {usage:>2}%",
+//    "format": "  {icon0}{icon1}{icon2}{icon3} {usage:>2}%",
+//    "format-icons": ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   },
 
   "memory": {
@@ -106,7 +108,7 @@
     "format": "{}",
     "tooltip": true,
     "interval": 1800,
-    "exec": "$(pwd)/scripts/weather-stats/weather-stats",
+    "exec": "/home/ben/.config/waybar/scripts/weather-stats/weather-stats.py",
     "return-type": "json"
   }
 }
