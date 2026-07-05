@@ -9,6 +9,7 @@ eval "$(starship init bash)"
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ff='fzf'
+
 PS1='[\u@\h \W]\$ '
 
 # >>> Codex installer >>>
@@ -59,4 +60,12 @@ move() {
   dest="$(find ~ -type d | fzf --prompt='destination >')" || return 1
   mv -r "$src" "$dest"
   echo "moved $src > $dest"
+}
+
+screen-shrink() {
+  hyprctl eval 'hl.monitor({ output = "DP-2", mode = "2560x1440@165", position = "0x0", scale = 1 })'
+}
+
+screen-wide() {
+  hyprctl eval 'hl.monitor({ output = "DP-2", mode = "3440x1440@165", position = "0x0", scale = 1 })'
 }

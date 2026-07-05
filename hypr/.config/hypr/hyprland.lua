@@ -20,8 +20,8 @@
 
 -- See https://wiki.hypr.land/Configuring/Basics/Monitors/
 hl.monitor({
-	output = "DP-3",
-	mode = "3440x1440@144",
+	output = "DP-2",
+	mode = "3440x1440@165",
 	position = "0x0",
 	scale = "auto",
 })
@@ -34,7 +34,7 @@ hl.monitor({
 })
 
 hl.monitor({
-	output = "DP-2",
+	output = "DP-1",
 	mode = "1920x1080@60",
 	position = "3440x-500",
 	scale = "auto",
@@ -46,7 +46,7 @@ hl.monitor({
 for _, workspace in ipairs({ "1", "2", "3", "4", "5", "6", "7", "8" }) do
 	hl.workspace_rule({
 		workspace = workspace,
-		monitor = "DP-3",
+		monitor = "DP-2",
 	})
 end
 
@@ -58,7 +58,7 @@ hl.workspace_rule({
 hl.workspace_rule({
 	-- SUPER+0 maps to workspace 10 in Hyprland.
 	workspace = "10",
-	monitor = "DP-2",
+	monitor = "DP-1",
 })
 
 ---------------------
@@ -101,6 +101,10 @@ hl.window_rule({
 	match = { class = "obsidian" },
 	workspace = 1,
 })
+hl.window_rule({
+	match = { class = "org.kde.dolphin" },
+	float = true,
+})
 
 -------------------------------
 ---- ENVIRONMENT VARIABLES ----
@@ -111,6 +115,7 @@ hl.window_rule({
 hl.env("XCURSOR_SIZE", "24")
 hl.env("HYPRCURSOR_SIZE", "24")
 hl.env("QT_QPA_PLATFORMTHEME", "kde")
+hl.env("XDG_MENU_PREFIX", "plasma-")
 
 -----------------------
 ----- PERMISSIONS -----
@@ -307,6 +312,7 @@ local mainMod = "SUPER" -- Sets "Windows" key as main modifier
 hl.bind(mainMod .. " + Return", hl.dsp.exec_cmd(terminal))
 hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(codex))
 hl.bind(mainMod .. " + F", hl.dsp.exec_cmd(firefox))
+hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"))
 
 local closeWindowBind = hl.bind(mainMod .. " + W", hl.dsp.window.close())
 -- closeWindowBind:set_enabled(false)
