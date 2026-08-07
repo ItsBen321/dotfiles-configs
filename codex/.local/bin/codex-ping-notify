@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -u
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/codex-ping"
+state_file="$state_root/enabled"
+sound_file="/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"
+
+if [[ ! -r "$state_file" ]] || [[ "$(<"$state_file")" != "on" ]]; then
+    exit 0
+fi
+
+if command -v pw-play >/dev/null 2>&1 \
+    && pw-play --volume=1.0 "$sound_file" >/dev/null 2>&1; then
+    exit 0
+fi
+
+if command -v paplay >/dev/null 2>&1 \
+    && paplay --volume=65536 "$sound_file" >/dev/null 2>&1; then
+    exit 0
+fi
+
+if command -v canberra-gtk-play >/dev/null 2>&1 \
+    && canberra-gtk-play --file="$sound_file" >/dev/null 2>&1; then
+    exit 0
+fi
+
+printf '\a' 2>/dev/null >/dev/tty || true
+exit 0

@@ -1,0 +1,14 @@
+[Unit]
+Description=Local Whisper server for voice dictation
+
+[Service]
+Type=simple
+Environment="LD_LIBRARY_PATH=/home/ben/.local/opt/voice-dictation/runtime"
+ExecStart=/home/ben/.local/opt/voice-dictation/runtime/whisper-server --model /home/ben/.local/share/voice-dictation/models/ggml-small.en-q5_1.bin --threads 12 --processors 1 --language en --no-timestamps --no-language-probabilities --suppress-nst --beam-size 5 --no-gpu --vad --vad-model /home/ben/.local/share/voice-dictation/models/ggml-silero-v6.2.0.bin --vad-threshold 0.5 --vad-min-speech-duration-ms 200 --vad-min-silence-duration-ms 300 --vad-speech-pad-ms 100 --host 127.0.0.1 --port 8178
+Restart=on-failure
+RestartSec=1
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

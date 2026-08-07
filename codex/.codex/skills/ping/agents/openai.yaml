@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ping"
+  short_description: "Toggle the Codex completion sound"
+  default_prompt: "Use $ping to toggle the Codex completion sound."

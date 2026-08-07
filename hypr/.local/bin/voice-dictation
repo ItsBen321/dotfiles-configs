@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+SERVICE_NAME="voice-dictation-whisper.service"
+SERVER_URL="http://127.0.0.1:8178"
+WTYPE_BIN="/home/ben/.local/opt/voice-dictation/usr/bin/wtype"
+OVERLAY_BIN="/home/ben/.local/bin/voice-dictation-overlay"
+
+RUNTIME_ROOT="$(printenv XDG_RUNTIME_DIR 2>/dev/null || true)"
+if [[ -z "$RUNTIME_ROOT" ]]; then
+	RUNTIME_ROOT="/tmp"
+fi
+
+STATE_DIR="$RUNTIME_ROOT/voice-dictation-$UID"
+PID_FILE="$STATE_DIR/recording.pid"
+LOCK_FILE="$STATE_DIR/action.lock"
+AUDIO_FILE="$STATE_DIR/recording.wav"
+RECORD_LOG="$STATE_DIR/recording.log"
+RESPONSE_FILE="$STATE_DIR/transcription.json"
+ERROR_LOG="$STATE_DIR/error.log"
+OVERLAY_STATE_FILE="$STATE_DIR/overlay.state"
+OVERLAY_PID_FILE="$STATE_DIR/overlay.pid"
+OVERLAY_LOG="$STATE_DIR/overlay.log"
+
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+set_visual_state() {
+	local state="$1"
+	local title="$2"
+	local detail="$3"
+	printf '%s\t%s\t%s\n' "$state" "$title" "$detail" >"$OVERLAY_STATE_FILE"
+
+	local overlay_pid=""
+	if [[ -r "$OVERLAY_PID_FILE" ]]; then
+		overlay_pid="$(<"$OVERLAY_PID_FILE")"
+		if [[ "$overlay_pid" =~ ^[0-9]+$ ]] && kill -0 "$overlay_pid" 2>/dev/null; then
+			return 0
+		fi
+		rm -f "$OVERLAY_PID_FILE"
+	fi
+
+	if [[ "$state" == "hide" ]]; then
+		return 0
+	fi
+
+	/usr/bin/nohup "$OVERLAY_BIN" "$STATE_DIR" >"$OVERLAY_LOG" 2>&1 9>&- &
+	overlay_pid=$!
+	printf '%s\n' "$overlay_pid" >"$OVERLAY_PID_FILE"
+}
+
+server_ready() {
+	/usr/bin/curl --silent --fail --max-time 1 "$SERVER_URL/health" >/dev/null 2>&1
+}
+
+wait_for_server() {
+	if server_ready; then
+		return 0
+	fi
+
+	/usr/bin/systemctl --user start "$SERVICE_NAME" >/dev/null 2>&1 || true
+
+	local i
+	for ((i = 0; i < 100; i++)); do
+		if server_ready; then
+			return 0
+		fi
+		sleep 0.1
+	done
+
+	return 1
+}
+
+current_recording_pid() {
+	if [[ ! -r "$PID_FILE" ]]; then
+		return 1
+	fi
+
+	local pid
+	pid="$(<"$PID_FILE")"
+	if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+		printf '%s\n' "$pid"
+		return 0
+	fi
+
+	rm -f "$PID_FILE"
+	return 1
+}
+
+start_recording() {
+	rm -f "$AUDIO_FILE" "$RECORD_LOG" "$RESPONSE_FILE" "$ERROR_LOG"
+
+	# Warm the model while the user speaks; this normally does nothing because
+	# the service starts with the desktop session and keeps the model loaded.
+	/usr/bin/systemctl --user start "$SERVICE_NAME" >/dev/null 2>&1 || true
+
+	/usr/bin/nohup /usr/bin/pw-record --media-type Audio --media-category Capture --media-role Communication --latency 50ms --rate 16000 --channels 1 --channel-map MONO --format s16 --container wav --quality 10 "$AUDIO_FILE" >"$RECORD_LOG" 2>&1 9>&- &
+	local pid=$!
+	printf '%s\n' "$pid" >"$PID_FILE"
+
+	sleep 0.2
+	if ! kill -0 "$pid" 2>/dev/null; then
+		rm -f "$PID_FILE"
+		set_visual_state "error" "Microphone unavailable" "Check the default audio input"
+		return 1
+	fi
+
+	set_visual_state "recording" "Recording" "Press MOD+D to finish"
+}
+
+stop_and_transcribe() {
+	local pid="$1"
+	kill -INT "$pid" 2>/dev/null || true
+
+	local i
+	for ((i = 0; i < 60; i++)); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			break
+		fi
+		sleep 0.05
+	done
+
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -TERM "$pid" 2>/dev/null || true
+		sleep 0.1
+	fi
+	rm -f "$PID_FILE"
+
+	local audio_size=0
+	if [[ -f "$AUDIO_FILE" ]]; then
+		audio_size="$(stat --format='%s' "$AUDIO_FILE" 2>/dev/null || printf '0')"
+	fi
+	if ((audio_size < 6000)); then
+		set_visual_state "error" "Recording too short" "Speak a little longer, then try again"
+		return 1
+	fi
+
+	set_visual_state "transcribing" "Transcribing" "Processing locally…"
+	if ! wait_for_server; then
+		set_visual_state "error" "Service unavailable" "Check the local Whisper service"
+		return 1
+	fi
+
+	if ! /usr/bin/curl --silent --show-error --fail --max-time 180 --output "$RESPONSE_FILE" --form "file=@$AUDIO_FILE;type=audio/wav" --form "response_format=verbose_json" --form "temperature=0.0" --form "temperature_inc=0.2" --form "no_speech_thold=0.6" --form "no_language_probabilities=true" "$SERVER_URL/inference" 2>"$ERROR_LOG"; then
+		set_visual_state "error" "Transcription failed" "See the local error log for details"
+		return 1
+	fi
+
+	local transcript
+	transcript="$(/usr/bin/jq --raw-output '.text // empty' "$RESPONSE_FILE" | /usr/bin/tr '\r\n' '  ' | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+
+	local confidence
+	confidence="$(/usr/bin/jq --raw-output '[.segments[]?.avg_logprob] | if length == 0 then -99 else add / length end' "$RESPONSE_FILE")"
+	if /usr/bin/awk -v confidence="$confidence" 'BEGIN { exit !(confidence < -0.75) }'; then
+		set_visual_state "error" "No clear speech" "Try a little closer to the microphone"
+		return 1
+	fi
+
+	local normalized
+	normalized="$(printf '%s' "$transcript" | /usr/bin/tr '[:upper:]' '[:lower:]' | /usr/bin/sed -E 's/[^[:alnum:] ]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+	case "$normalized" in
+		"" | "blank audio" | "silence" | "music" | "thanks for watching" | "thank you for watching" | "please subscribe")
+			set_visual_state "error" "No speech detected" "Try a little closer to the microphone"
+			return 1
+			;;
+	esac
+
+	local compact_length
+	compact_length="$(printf '%s' "$normalized" | /usr/bin/tr --delete '[:space:]' | /usr/bin/wc --chars)"
+	if ((compact_length < 4)); then
+		set_visual_state "error" "Fragment too short" "Nothing was inserted"
+		return 1
+	fi
+
+	if printf '%s' "$transcript" | "$WTYPE_BIN" -d 1 -; then
+		local preview
+		preview="$(printf '%s' "$transcript" | /usr/bin/cut --characters=1-120)"
+		set_visual_state "success" "Transcript inserted" "$preview"
+		return 0
+	fi
+
+	# Clipboard fallback for compositors that reject virtual-keyboard input.
+	printf '%s' "$transcript" | /usr/bin/wl-copy
+	set_visual_state "copied" "Copied to clipboard" "Paste with Ctrl+Shift+V"
+}
+
+exec 9>"$LOCK_FILE"
+if ! /usr/bin/flock --nonblock 9; then
+	exit 0
+fi
+
+if pid="$(current_recording_pid)"; then
+	stop_and_transcribe "$pid"
+else
+	start_recording
+fi

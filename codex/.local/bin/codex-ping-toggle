@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/codex-ping"
+state_file="$state_root/enabled"
+
+mkdir -p "$state_root"
+
+if [[ -r "$state_file" ]] && [[ "$(<"$state_file")" == "on" ]]; then
+    printf 'off\n' >"$state_file"
+    printf 'Codex completion ping: off\n'
+else
+    printf 'on\n' >"$state_file"
+    printf 'Codex completion ping: on\n'
+fi

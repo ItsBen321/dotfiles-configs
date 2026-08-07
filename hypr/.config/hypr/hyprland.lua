@@ -106,6 +106,23 @@ hl.window_rule({
 	float = true,
 })
 
+hl.window_rule({
+	name = "voice-dictation-overlay",
+	match = { class = "voice-dictation-overlay" },
+	float = true,
+	pin = true,
+	no_focus = true,
+	no_initial_focus = true,
+	no_follow_mouse = true,
+	no_shortcuts_inhibit = true,
+	render_unfocused = true,
+	move = { "(monitor_w-window_w)/2", "42" },
+	size = { 600, 104 },
+	border_size = 0,
+	decorate = false,
+	animation = "popin 92%",
+})
+
 -------------------------------
 ---- ENVIRONMENT VARIABLES ----
 -------------------------------
@@ -197,7 +214,7 @@ hl.curve("almostLinear", { type = "bezier", points = { { 0.5, 0.5 }, { 0.75, 1 }
 hl.curve("quick", { type = "bezier", points = { { 0.15, 0 }, { 0.1, 1 } } })
 
 -- Default springs
-hl.curve("easy", { type = "spring", mass = 1, stiffness = 71.2633, dampening = 15.8273644 })
+hl.curve("easy", { type = "spring", mass = 1, stiffness = 550, dampening = 35 })
 
 hl.animation({ leaf = "global", enabled = true, speed = 10, bezier = "default" })
 hl.animation({ leaf = "border", enabled = true, speed = 5.39, bezier = "easeOutQuint" })
@@ -312,6 +329,11 @@ local mainMod = "SUPER" -- Sets "Windows" key as main modifier
 hl.bind(mainMod .. " + Return", hl.dsp.exec_cmd(terminal))
 hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(codex))
 hl.bind(mainMod .. " + F", hl.dsp.exec_cmd(firefox))
+hl.bind(
+	mainMod .. " + D",
+	hl.dsp.exec_cmd("/home/ben/.local/bin/voice-dictation"),
+	{ description = "Toggle local voice dictation" }
+)
 hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"))
 
 local closeWindowBind = hl.bind(mainMod .. " + W", hl.dsp.window.close())
@@ -355,8 +377,8 @@ hl.bind(mainMod .. " + exclam", hl.dsp.focus({ workspace = 8 }))
 hl.bind(mainMod .. " + SHIFT + exclam", hl.dsp.window.move({ workspace = 8 }))
 hl.bind(mainMod .. " + ccedilla", hl.dsp.focus({ workspace = 9 }))
 hl.bind(mainMod .. " + SHIFT + ccedilla", hl.dsp.window.move({ workspace = 9 }))
-hl.bind(mainMod .. " + agrave", hl.dsp.focus({ workspace = 0 }))
-hl.bind(mainMod .. " + SHIFT + agrave", hl.dsp.window.move({ workspace = 0 }))
+hl.bind(mainMod .. " + agrave", hl.dsp.focus({ workspace = 10 }))
+hl.bind(mainMod .. " + SHIFT + agrave", hl.dsp.window.move({ workspace = 10 }))
 --end
 
 -- Example special workspace (scratchpad)
@@ -450,3 +472,16 @@ hl.window_rule({
 	move = "20 monitor_h-120",
 	float = true,
 })
+
+-- make floating windows smaller
+--hl.window_rule({
+--	match = {
+--		float = true,
+--		class = "negative:voice-dictation-overlay",
+--	},
+--	size = {
+--		"monitor_w*0.35",
+--		"monitor_h*0.60",
+--	},
+--	center = true,
+--})

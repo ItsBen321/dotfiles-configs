@@ -1,0 +1,7 @@
+interface:
+  display_name: "Upkeep"
+  short_description: "Maintain every configured project subject"
+  default_prompt: "Use $upkeep to maintain every configured subject in the current project."
+
+policy:
+  allow_implicit_invocation: false

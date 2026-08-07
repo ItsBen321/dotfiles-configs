@@ -69,3 +69,17 @@ screen-shrink() {
 screen-wide() {
   hyprctl eval 'hl.monitor({ output = "DP-2", mode = "3440x1440@165", position = "0x0", scale = 1 })'
 }
+
+gac() {
+  local message
+  if (($# == 0)); then
+    message="$(date '+%d-%m-%Y %H:%M:%S')"
+  else
+    message="$*"
+  fi
+  git add . && git commit -m "$message"
+}
+
+git-live() {
+  watch --color --no-wrap -n 0.5 '{ git -c color.ui=always --no-pager diff -U0; printf "\n"; git -c color.ui=always --no-pager diff --stat; } | tail -n "$(( $(tput lines) - 2 ))"'
+}

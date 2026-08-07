@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Small animated overlay for the local voice-dictation workflow."""
+
+from __future__ import annotations
+
+from array import array
+from collections import deque
+import math
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk
+
+
+TICK_MS = 60
+OVERLAY_WIDTH = 600
+OVERLAY_HEIGHT = 104
+BAR_COUNT = 48
+TERMINAL_STATE_SECONDS = {
+    "success": 1.6,
+    "copied": 2.2,
+    "error": 2.8,
+}
+STATE_COLORS = {
+    "recording": (0.95, 0.55, 0.66),
+    "transcribing": (0.54, 0.71, 0.98),
+    "success": (0.65, 0.89, 0.63),
+    "copied": (0.98, 0.89, 0.69),
+    "error": (0.98, 0.70, 0.53),
+}
+
+
+class Waveform(Gtk.DrawingArea):
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_size_request(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        self.state = "recording"
+        self.phase = 0.0
+        self.levels: deque[float] = deque([0.06] * BAR_COUNT, maxlen=BAR_COUNT)
+
+    def set_state(self, state: str) -> None:
+        self.state = state
+
+    def push_recording_level(self, level: float) -> None:
+        self.levels.append(level)
+
+    def advance(self) -> None:
+        self.phase += 0.22
+        self.queue_draw()
+
+    def _values(self) -> list[float]:
+        if self.state == "recording":
+            values = list(self.levels)
+            return [
+                max(0.04, min(1.0, value * (0.82 + 0.18 * math.sin(self.phase + index * 0.8))))
+                for index, value in enumerate(values)
+            ]
+
+        if self.state == "transcribing":
+            return [
+                0.12 + 0.72 * ((math.sin(self.phase - index * 0.48) + 1.0) * 0.5) ** 2
+                for index in range(BAR_COUNT)
+            ]
+
+        if self.state in {"success", "copied"}:
+            center = (BAR_COUNT - 1) / 2
+            pulse = 0.86 + 0.14 * math.sin(self.phase)
+            return [
+                0.10 + 0.64 * math.exp(-((index - center) / 4.2) ** 2) * pulse
+                for index in range(BAR_COUNT)
+            ]
+
+        return [
+            0.18 + (0.34 if index % 2 == 0 else 0.08) * (0.8 + 0.2 * math.sin(self.phase))
+            for index in range(BAR_COUNT)
+        ]
+
+    def do_draw(self, context: cairo.Context) -> bool:
+        width = self.get_allocated_width()
+        height = self.get_allocated_height()
+        center_y = height / 2
+        horizontal_padding = 12.0
+        vertical_padding = 10.0
+        drawable_width = width - horizontal_padding * 2
+        drawable_height = height - vertical_padding * 2
+        gap = 4.5
+        bar_width = max(3.0, (drawable_width - gap * (BAR_COUNT - 1)) / BAR_COUNT)
+        color = STATE_COLORS.get(self.state, STATE_COLORS["transcribing"])
+
+        context.set_line_cap(cairo.LINE_CAP_ROUND)
+        bars = []
+        for index, value in enumerate(self._values()):
+            x = horizontal_padding + bar_width / 2 + index * (bar_width + gap)
+            bar_height = 6.0 + value * (drawable_height - 8.0)
+            bars.append((x, bar_height))
+
+        # A soft halo keeps the waveform legible over both light and dark windows.
+        context.set_source_rgba(0.07, 0.07, 0.11, 0.58)
+        context.set_line_width(bar_width + 4.0)
+        for x, bar_height in bars:
+            context.move_to(x, center_y - bar_height / 2)
+            context.line_to(x, center_y + bar_height / 2)
+            context.stroke()
+
+        context.set_source_rgba(*color, 0.98)
+        context.set_line_width(bar_width)
+        for x, bar_height in bars:
+            context.move_to(x, center_y - bar_height / 2)
+            context.line_to(x, center_y + bar_height / 2)
+            context.stroke()
+
+        return True
+
+
+class VoiceOverlay:
+    def __init__(self, state_dir: Path) -> None:
+        self.state_dir = state_dir
+        self.state_path = state_dir / "overlay.state"
+        self.pid_path = state_dir / "overlay.pid"
+        self.audio_path = state_dir / "recording.wav"
+        self.last_state_mtime = -1
+        self.state = "recording"
+        self.state_changed_at = time.monotonic()
+        self.close_at: float | None = None
+        self.smoothed_level = 0.05
+
+        GLib.set_prgname("voice-dictation-overlay")
+        Gdk.set_program_class("voice-dictation-overlay")
+
+        self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.window.set_title("Voice Dictation Overlay")
+        self.window.set_name("voice-overlay")
+        self.window.set_decorated(False)
+        self.window.set_resizable(False)
+        self.window.set_keep_above(True)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.set_accept_focus(False)
+        self.window.set_focus_on_map(False)
+        self.window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        self.window.set_app_paintable(True)
+        self.window.set_size_request(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        self.window.connect("destroy", lambda *_: Gtk.main_quit())
+
+        screen = self.window.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual is not None and screen.is_composited():
+            self.window.set_visual(visual)
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(
+            b"""
+            window#voice-overlay {
+                background-color: transparent;
+            }
+            """
+        )
+        Gtk.StyleContext.add_provider_for_screen(
+            screen,
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        self.waveform = Waveform()
+        self.window.add(self.waveform)
+        self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        self._read_state(force=True)
+        GLib.timeout_add(TICK_MS, self._tick)
+
+    def _read_state(self, force: bool = False) -> None:
+        try:
+            stat = self.state_path.stat()
+            if not force and stat.st_mtime_ns == self.last_state_mtime:
+                return
+            self.last_state_mtime = stat.st_mtime_ns
+            raw = self.state_path.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError):
+            return
+
+        if not raw:
+            return
+
+        parts = raw.split("\t", 2)
+        state = parts[0]
+        if state == "hide":
+            Gtk.main_quit()
+            return
+        if state not in STATE_COLORS:
+            return
+
+        if state != self.state:
+            self.state = state
+            self.state_changed_at = time.monotonic()
+            duration = TERMINAL_STATE_SECONDS.get(state)
+            self.close_at = self.state_changed_at + duration if duration else None
+
+        self.waveform.set_state(state)
+
+    def _recording_level(self) -> float:
+        try:
+            size = self.audio_path.stat().st_size
+            if size <= 44:
+                return 0.04
+            byte_count = min(3200, size - 44)
+            byte_count -= byte_count % 2
+            with self.audio_path.open("rb") as audio:
+                audio.seek(size - byte_count)
+                data = audio.read(byte_count)
+        except OSError:
+            return 0.04
+
+        samples = array("h")
+        samples.frombytes(data)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if not samples:
+            return 0.04
+
+        mean_square = sum(sample * sample for sample in samples) / len(samples)
+        rms = math.sqrt(mean_square) / 32768.0
+        target = max(0.04, min(1.0, rms * 12.0))
+        self.smoothed_level = self.smoothed_level * 0.58 + target * 0.42
+        return self.smoothed_level
+
+    def _tick(self) -> bool:
+        self._read_state()
+        if self.state == "recording":
+            self.waveform.push_recording_level(self._recording_level())
+        self.waveform.advance()
+
+        if self.close_at is not None and time.monotonic() >= self.close_at:
+            Gtk.main_quit()
+            return False
+        return True
+
+    def run(self) -> None:
+        self.window.show_all()
+        Gtk.main()
+
+    def cleanup(self) -> None:
+        try:
+            if self.pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                self.pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} STATE_DIR", file=sys.stderr)
+        return 2
+
+    state_dir = Path(sys.argv[1]).expanduser()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    overlay = VoiceOverlay(state_dir)
+
+    def request_exit(*_: object) -> None:
+        GLib.idle_add(Gtk.main_quit)
+
+    signal.signal(signal.SIGINT, request_exit)
+    signal.signal(signal.SIGTERM, request_exit)
+    try:
+        overlay.run()
+    finally:
+        overlay.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

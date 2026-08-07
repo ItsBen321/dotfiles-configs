@@ -1,0 +1,6 @@
+interface:
+  display_name: "GitHub Review"
+  short_description: "Audit a GitHub repo and open focused fix PRs"
+  default_prompt: "Use $github-review to inspect this GitHub repository in three passes and open small, focused pull requests for confirmed fixes."
+policy:
+  allow_implicit_invocation: false

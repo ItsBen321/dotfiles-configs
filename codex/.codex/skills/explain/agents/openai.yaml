@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explain"
+  short_description: "Natural change handoffs with local narration"
+  default_prompt: "Use $explain to give me a natural coworker-style walkthrough of these changes with a written companion and human-sounding local AI narration."
