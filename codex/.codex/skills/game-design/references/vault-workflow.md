@@ -2,7 +2,7 @@
 
 The editable vault is the user's local Obsidian vault named `Gamedev Codex Wiki`. Resolve the local path before reading or editing notes.
 
-Use this order:
+Prefer the sibling `vault-retrieval` skill with `--profile game-design`; its per-desktop configuration and discovery resolve the vault. If it is missing, disabled, or fails, use the original order below:
 
 1. User-provided path.
 2. `GAME_DESIGN_VAULT`, `GAME_DESIGN_VAULT_PATH`, or `CODEX_GAME_DESIGN_VAULT`.
@@ -12,12 +12,14 @@ Use this order:
 
 ## Search Order
 
+Try one shared retrieval call with the concrete design task and known `--project`. Read its full index/preferences and original excerpts; read specific full originals if coverage is incomplete. New or changed vault files refresh automatically. Disable with `configure --disable` or `VAULT_RETRIEVAL_ENABLED=0` to return to the following workflow; Jev failures also fall back here.
+
 1. Read `INDEX.md` in the editable vault.
 2. Do an index-routing pass. Choose likely buckets: foundations, workflows, templates, concepts, source notes, preferences, or project notes.
 3. Search exact task terms, reference games, genre names, mechanics, player feelings, loop/progression language, and design risks.
 4. Follow only directly relevant `[[links]]`.
 
-Use the bundled helper first:
+For fallback searches or direct follow-up navigation, use the bundled helper:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "<path-to-this-skill>\scripts\search_vault.ps1" -PrintPath

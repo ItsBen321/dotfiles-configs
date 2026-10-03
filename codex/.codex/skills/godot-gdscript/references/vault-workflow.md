@@ -2,7 +2,7 @@
 
 The editable vault is the user's local Obsidian vault named `Godot Codex Wiki`. Resolve the local path before reading or editing notes.
 
-Use this order:
+Prefer the sibling `vault-retrieval` skill with `--profile godot`; its per-desktop configuration and discovery resolve the vault. If it is missing, disabled, or fails, use the original order below:
 
 1. User-provided path.
 2. `GODOT_CODEX_VAULT`, `GODOT_CODEX_VAULT_PATH`, or `CODEX_GODOT_VAULT`.
@@ -11,6 +11,8 @@ Use this order:
 5. Common-folder search for `Godot Codex Wiki`.
 
 ## Search Order
+
+Try one shared retrieval call with the concrete task and known `--project`, pinning `Workflows/Godot MCP Tool Routing.md` when Godot MCP tools are available. Read its full mandatory notes and original excerpts; read specific full originals if coverage is incomplete. New or changed vault files refresh automatically. Disable with `configure --disable` or `VAULT_RETRIEVAL_ENABLED=0` to return to the following workflow; Jev failures also fall back here.
 
 1. Read `INDEX.md`.
 2. Do a lightweight index-routing pass. Scan the `INDEX.md` map and list the likely buckets for the task: project note, workflow, GDScript, architecture, Godot system, validation, or tooling.
@@ -42,7 +44,7 @@ Revisit especially before:
 - Touching physics, input, UI focus, pause/timers/tweens, threading, async/await, scene inheritance, autoloads, or signals.
 - Selecting validation commands or test workflows.
 
-Use the bundled PowerShell helper first. It avoids direct `rg` calls by default, which matters in Codex Desktop environments where `rg` can be blocked with `Access is denied`.
+For fallback searches or direct follow-up navigation, use the bundled PowerShell helper. It avoids direct `rg` calls by default, which matters in Codex Desktop environments where `rg` can be blocked with `Access is denied`.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "<path-to-this-skill>\scripts\search_vault.ps1" -PrintPath

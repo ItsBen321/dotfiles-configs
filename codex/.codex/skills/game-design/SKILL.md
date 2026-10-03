@@ -13,7 +13,9 @@ Treat the resolved vault as editable project memory. Read it before acting, and 
 
 ## Vault Discovery
 
-Resolve the vault path at the start of each task. Prefer, in order:
+Prefer the sibling `vault-retrieval` skill's helper for retrieval and discovery. It adds per-desktop config and automatic catalogue refresh to the existing discovery options. If the shared skill is missing, disabled, or Jev fails, use the original discovery and search workflow below immediately; do not block design work on Jev setup.
+
+For that fallback, `vault-retrieval/scripts/retrieve.py path --profile game-design` still resolves the configured path without Jev, even while disabled; pass it to the existing helper's `-VaultPath` or use native file reads. If the shared helper is unavailable, resolve the vault path at the start of each task. Prefer, in order:
 
 1. A path the user explicitly provides.
 2. `GAME_DESIGN_VAULT`, `GAME_DESIGN_VAULT_PATH`, or `CODEX_GAME_DESIGN_VAULT`.
@@ -31,7 +33,17 @@ If discovery fails, ask the user for the vault path and suggest saving it in `~/
 
 ## Vault Navigation Tools
 
-In Codex Desktop on Windows, direct `rg` vault search may be blocked with `Access is denied`. Start with the bundled PowerShell helper:
+Preferred retrieval (load the sibling `vault-retrieval/SKILL.md` when first using it):
+
+```sh
+python3 "<skills-directory>/vault-retrieval/scripts/retrieve.py" retrieve --profile game-design --task "Concrete design request, desired experience, and relevant systems"
+```
+
+Use `python` on Windows. Pass `--project "Existing Concept Note Title"` for a known concept and `--vault` for a user-provided path. Read the returned guidance directly with a tool output limit around 12,000 tokens. The helper includes the index and user design preferences in full, followed by original excerpts. Fetch specific complete notes with its `read` command when passages are incomplete.
+
+Disable with `retrieve.py configure --disable`, re-enable with `configure --enable`, or temporarily disable with `VAULT_RETRIEVAL_ENABLED=0`. A disabled helper (exit 3) or any failed Jev call means use the existing workflow below, without repeated API attempts.
+
+For fallback navigation in Codex Desktop on Windows, direct `rg` vault search may be blocked with `Access is denied`. Start with the bundled PowerShell helper:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "<path-to-this-skill>\scripts\search_vault.ps1" -Overview
@@ -58,10 +70,9 @@ Only use `rg` for vault search if the user explicitly requests it or you have al
    - If the task implies a game project, search for an existing project or concept note before creating new structure.
 
 2. Consult the editable design vault.
-   - Start with `INDEX.md`.
-   - For broad or unfamiliar tasks, run the helper with `-Overview` to see note titles, types, statuses, update dates, and line counts before opening files.
-   - Do a lightweight index-routing pass: identify likely buckets such as foundations, workflows, templates, concept notes, source notes, preferences, or project-specific material.
-   - Search exact task terms, related genre terms, reference games, mechanics, desired feelings, loop/progression terms, and player audience terms.
+   - Prefer one call to the shared retrieval helper above. Use its full index as the routing map and inspect the returned passages for coverage; fetch a specific original when needed.
+   - If that helper is missing, disabled, or fails, start with `INDEX.md`, choose relevant categories, and search exact task/genre terms, reference games, mechanics, desired feelings, loops, and audience terms using the existing helpers. For broad tasks, use `-Overview` before opening files.
+   - Pass a matching concept title as `--project` so its root note is included in full; omit this for a new game.
    - Read the smallest relevant notes first. Follow Obsidian links only when directly relevant.
 
 3. Research when needed.

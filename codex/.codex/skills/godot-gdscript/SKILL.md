@@ -11,7 +11,9 @@ Treat the resolved vault as editable project memory. Read it before acting, and 
 
 ## Vault Discovery
 
-Resolve the vault path at the start of each task. Prefer, in order:
+Prefer the sibling `vault-retrieval` skill's helper for retrieval and discovery. It adds per-desktop config and automatic catalogue refresh to the existing discovery options. If the shared skill is missing, disabled, or Jev fails, use the original discovery and search workflow below immediately; do not block Godot work on Jev setup.
+
+For that fallback, `vault-retrieval/scripts/retrieve.py path --profile godot` still resolves the configured path without Jev, even while disabled; pass it to the existing helper's `-VaultPath` or use native file reads. If the shared helper is unavailable, resolve the vault path at the start of each task. Prefer, in order:
 
 1. A path the user explicitly provides.
 2. `GODOT_CODEX_VAULT`, `GODOT_CODEX_VAULT_PATH`, or `CODEX_GODOT_VAULT`.
@@ -29,7 +31,17 @@ If discovery fails, ask the user for the vault path and suggest saving it in `~/
 
 ## Vault Navigation Tools
 
-In Codex Desktop on Windows, `rg` may be blocked with `Access is denied`. Do not probe, retry, or announce a fallback from `rg` just to navigate the Godot vault. Start with the bundled PowerShell helper, which uses PowerShell-native search by default:
+Preferred retrieval (load the sibling `vault-retrieval/SKILL.md` when first using it):
+
+```sh
+python3 "<skills-directory>/vault-retrieval/scripts/retrieve.py" retrieve --profile godot --task "Concrete Godot task and relevant subsystems"
+```
+
+Use `python` on Windows. Pass `--project "Existing Project Note Title"` when known, `--vault` for a user-provided path, and `--include-note "Workflows/Godot MCP Tool Routing.md"` whenever `mcp__godot__` is available. Read the returned guidance directly with a tool output limit around 12,000 tokens. The helper returns the index and mandatory editing, typing, and validation notes in full, followed by original excerpts. Fetch specific complete notes with its `read` command when passages are incomplete.
+
+Disable with `retrieve.py configure --disable`, re-enable with `configure --enable`, or temporarily disable with `VAULT_RETRIEVAL_ENABLED=0`. A disabled helper (exit 3) or any failed Jev call means use the existing workflow below, without repeated API attempts.
+
+For fallback navigation in Codex Desktop on Windows, `rg` may be blocked with `Access is denied`. Do not probe, retry, or announce a fallback from `rg` just to navigate the Godot vault. Start with the bundled PowerShell helper, which uses PowerShell-native search by default:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "<path-to-this-skill>\scripts\search_vault.ps1" -Overview
@@ -61,13 +73,10 @@ Only use `rg` for vault search if the user explicitly requests it or you have al
    - Use `scripts/project_inventory.ps1` when a quick project map would help.
 
 2. Consult the vault.
-   - Start with `INDEX.md`.
-   - For broad or unfamiliar tasks, run `scripts/search_vault.ps1 -Overview` to see note titles, types, statuses, update dates, and line counts before opening files.
-   - Run a lightweight index-routing pass: scan the index map, identify the likely note categories for the task, then search and read only the relevant notes.
-   - Search the vault with exact task terms, class names, scene names, architecture terms, and related Godot concepts.
-   - Use `scripts/search_vault.ps1 -Query "term one","term two"` or PowerShell-native `Get-ChildItem`/`Select-String`.
+   - Prefer one call to the shared retrieval helper above. Use its full index as the routing map and inspect the returned passages for coverage; fetch a specific original when needed.
+   - If that helper is missing, disabled, or fails, start with `INDEX.md`, identify relevant categories, and search with exact task terms, class/scene names, and related Godot concepts using the existing helpers. For broad tasks, use `scripts/search_vault.ps1 -Overview` before opening files.
    - Read the smallest relevant notes first. Follow Obsidian links only when they are directly relevant.
-   - If a Godot project root was found, check whether that project exists under `Project Notes` or is linked from `Project Notes/Project Notes Index.md`. Search by folder name, project name, main scene, and any known game title. Read the active project note before editing when one exists.
+   - If a Godot project root was found, check whether that project exists under `Project Notes` or is linked from `Project Notes/Project Notes Index.md`. Search by folder name, project name, main scene, and any known game title. Pass the matching note title as `--project`; an exact matching root is included in full. Read the active project note before editing when one exists.
    - Treat vault use as iterative. Revisit the vault while implementing whenever the work touches a new subsystem, architecture choice, scene/resource format, node reference pattern, input map, physics/collision setup, test workflow, or validation command.
 
 3. Inspect the Godot project.
