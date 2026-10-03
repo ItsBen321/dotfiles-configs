@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vault Retrieval"
+  short_description: "Retrieve vault guidance with Jev and local caching"
+  default_prompt: "Use $vault-retrieval to fetch the vault guidance relevant to this task."

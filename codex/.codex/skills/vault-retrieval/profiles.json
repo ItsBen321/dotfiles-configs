@@ -1,0 +1,18 @@
+{
+  "godot": {
+    "vault_name": "Godot Codex Wiki",
+    "environment": ["GODOT_CODEX_VAULT", "GODOT_CODEX_VAULT_PATH", "CODEX_GODOT_VAULT"],
+    "legacy_config": "godot-codex-vault",
+    "required": ["INDEX.md", "Workflows/Manual Editing Rules.md", "GDScript/Style and Typing.md", "Workflows/Godot CLI Validation.md"],
+    "project_directories": ["Project Notes"],
+    "general_project_notes": []
+  },
+  "game-design": {
+    "vault_name": "Gamedev Codex Wiki",
+    "environment": ["GAME_DESIGN_VAULT", "GAME_DESIGN_VAULT_PATH", "CODEX_GAME_DESIGN_VAULT"],
+    "legacy_config": "game-design-vault",
+    "required": ["INDEX.md", "Preferences/User Design Preferences.md"],
+    "project_directories": ["Concepts"],
+    "general_project_notes": ["Concepts/Idea Seeds.md", "Concepts/Mechanic Prompt Bank.md"]
+  }
+}
