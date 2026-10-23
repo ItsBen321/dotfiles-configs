@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Change Caps Lock for the current Hyprland session.
+set -euo pipefail
+
+mode=${1:-toggle}
+if (( $# > 1 )); then
+    echo 'Usage: caps-toggle [status|escape|caps]' >&2
+    exit 2
+fi
+case "$mode" in
+    toggle|status|escape|caps) ;;
+    -h|--help)
+        echo 'Usage: caps-toggle [status|escape|caps]'
+        echo 'Switch Caps Lock between Escape and Shift Lock (letters, numbers, and punctuation).'
+        echo 'Hyprland reloads and new sessions restore the configured default.'
+        exit 0
+        ;;
+    *) echo 'Usage: caps-toggle [status|escape|caps]' >&2; exit 2 ;;
+esac
+
+options=$(hyprctl -j getoption input:kb_options | jq -er '.str | strings')
+if [[ ",$options," == *,caps:escape,* ]]; then
+    current=escape
+else
+    current=caps
+fi
+
+if [[ "$mode" == status ]]; then
+    if [[ "$current" == escape ]]; then
+        echo 'Caps Lock acts as Escape.'
+    elif [[ ",$options," == *,caps:shiftlock,* ]]; then
+        echo 'Caps Lock acts as Shift Lock (letters, numbers, and punctuation).'
+    else
+        echo 'Caps Lock uses its normal behavior.'
+    fi
+    exit 0
+fi
+
+if [[ "$mode" == toggle ]]; then
+    if [[ "$current" == escape ]]; then mode=caps; else mode=escape; fi
+fi
+
+# Preserve unrelated XKB options, replacing only Caps Lock mappings.
+next=$(jq -rn --arg options "$options" --arg mode "$mode" '
+    ($options | split(",") | map(select(length > 0 and (startswith("caps:") | not))))
+    + (if $mode == "escape" then ["caps:escape"] else ["caps:shiftlock"] end)
+    | join(",") | @json
+')
+hyprctl eval "hl.config({input = {kb_options = $next}})" >/dev/null
+
+if [[ "$mode" == escape ]]; then
+    echo 'Caps Lock now acts as Escape.'
+else
+    echo 'Caps Lock now acts as Shift Lock (letters, numbers, and punctuation).'
+fi
