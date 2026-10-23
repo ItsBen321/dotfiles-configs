@@ -55,6 +55,8 @@ Global `--config PATH` and `--cache-dir PATH` precede the subcommand. Config acc
 }
 ```
 
+The helper probes actual writes to the cache. If the default cache is denied or mounted read-only, it creates a private temporary directory (mode 700 on Unix) and reports `cache_dir` and `cache_fallback`. Each fallback run has its own directory, so it rebuilds the catalogue; temporary output persists until removed or cleaned by the OS. Explicit `--cache-dir` paths never silently fall back. Other write errors, such as a full disk, are reported directly.
+
 Deleting the cache is safe. Each retrieval hashes visible Markdown notes, re-extracts changed metadata, and rebuilds category membership. A changed index refreshes author-written descriptions. It checks for changes again after Jev responds and retries selection once if the vault changed, recording both attempts' usage. Continuous changes stop retrieval rather than mix versions. Concurrent desktops maintain separate caches.
 
 Categories derive from folders, with large folders split by their topic tags. Jev selects relevant branches, then scores candidate note descriptions in bounded batches. Required notes bypass scoring. Low category confidence broadens the search; selection quality still needs judgment from the consuming skill.

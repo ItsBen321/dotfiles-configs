@@ -1,5 +1,6 @@
 """Behavioral checks using temporary vaults; no credentials or paid API calls."""
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -161,6 +162,41 @@ class RetrievalTests(unittest.TestCase):
             r.main(self.args('retrieve', '--profile', 'godot', '--vault', str(self.vault),
                              '--project', 'Space Game', '--task', 'physics', '--max-chars', '28000'))
         api.assert_not_called()
+
+    def test_default_cache_falls_back_on_read_only_mount(self):
+        blocked = self.root / 'read-only-cache'
+        real_mkstemp = r.tempfile.mkstemp
+        def simulate_mount(*args, **kwargs):
+            if Path(kwargs.get('dir', '')) == blocked:
+                raise OSError(errno.EROFS, 'Read-only file system')
+            return real_mkstemp(*args, **kwargs)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(r, 'local_paths', return_value=(self.config, blocked)), \
+                patch.object(r.tempfile, 'mkstemp', side_effect=simulate_mount), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            r.main(['retrieve', '--profile', 'godot', '--vault', str(self.vault),
+                    '--task', 'physics', '--offline'])
+        metadata = json.loads(stderr.getvalue())
+        fallback = Path(metadata['cache_dir'])
+        self.addCleanup(r.shutil.rmtree, fallback)
+        self.assertTrue(metadata['cache_fallback'])
+        self.assertNotEqual(fallback, blocked)
+        self.assertTrue(Path(metadata['result']).is_file())
+        self.assertIn('Physics.md', stdout.getvalue())
+        if sys.platform != 'win32':
+            self.assertEqual(fallback.stat().st_mode & 0o777, 0o700)
+
+    def test_explicit_unwritable_cache_is_not_silently_replaced(self):
+        with patch.object(r.tempfile, 'mkstemp', side_effect=PermissionError(errno.EACCES, 'Denied')), \
+                patch.object(r.tempfile, 'mkdtemp') as fallback, self.assertRaises(r.RetrievalError):
+            r.writable_cache(self.cache, explicit=True)
+        fallback.assert_not_called()
+
+    def test_unrelated_cache_errors_do_not_trigger_fallback(self):
+        with patch.object(r.tempfile, 'mkstemp', side_effect=OSError(errno.ENOSPC, 'Full')), \
+                patch.object(r.tempfile, 'mkdtemp') as fallback, self.assertRaises(r.RetrievalError):
+            r.writable_cache(self.cache)
+        fallback.assert_not_called()
 
     def test_disable_precedes_vault_and_network_access_and_can_reenable(self):
         with contextlib.redirect_stdout(io.StringIO()):

@@ -33,3 +33,5 @@ python3 "<path-to-this-skill>/scripts/retrieve.py" configure --enable
 ```
 
 `VAULT_RETRIEVAL_ENABLED=0` temporarily disables it and takes precedence over local config. Read [references/setup.md](references/setup.md) only for desktop setup, custom required notes/categories, or troubleshooting. Credentials, absolute vault paths, cached catalogues, and request logs stay outside the dotfiles repo.
+
+When the default cache is read-only, the helper uses a private temporary directory and reports `cache_dir` and `cache_fallback`. An explicitly provided global `--cache-dir PATH` is respected and must be writable.

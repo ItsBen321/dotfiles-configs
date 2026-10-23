@@ -3,6 +3,7 @@
 import argparse
 import collections
 import concurrent.futures
+import errno
 import hashlib
 import json
 import math
@@ -56,6 +57,24 @@ def load_json(path, default=None):
         return json.loads(path.read_text(encoding='utf-8-sig'))
     except (ValueError, OSError) as error:
         raise RetrievalError(f'Cannot read JSON file: {path}') from error
+
+
+def writable_cache(path, explicit=False):
+    """Check actual writes: directory permissions alone miss agent sandbox mounts."""
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, probe = tempfile.mkstemp(prefix='.write-check-', dir=path)
+        os.close(fd)
+        os.unlink(probe)
+        return path, False
+    except OSError as error:
+        if explicit or error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise RetrievalError(f'Cannot write cache directory {path}; choose a writable --cache-dir.') from error
+        # mkdtemp creates a private directory; never put vault text in a shared path.
+        try:
+            return Path(tempfile.mkdtemp(prefix='vault-retrieval-')), True
+        except OSError as fallback_error:
+            raise RetrievalError('Cannot write the default or temporary cache; choose a writable --cache-dir.') from fallback_error
 
 
 def atomic_json(path, value):
@@ -555,9 +574,9 @@ def render(text, required, selected, task, max_chars, full_path):
 
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
-    config_path, cache_path = local_paths()
+    config_path, _ = local_paths()
     root.add_argument('--config', type=Path, default=config_path)
-    root.add_argument('--cache-dir', type=Path, default=cache_path)
+    root.add_argument('--cache-dir', type=Path, help='Cache directory (default: platform user cache, with a private temporary fallback if read-only)')
     sub = root.add_subparsers(dest='command', required=True)
     for command in ['configure', 'path', 'index', 'retrieve', 'read']:
         child = sub.add_parser(command)
@@ -617,7 +636,6 @@ def main(argv=None):
     if args.command == 'path':
         print(vault)
         return
-    cache = args.cache_dir / args.profile / digest(str(vault))[:16]
     if args.command == 'read':
         if args.start_line < 1 or args.max_chars < 100:
             raise RetrievalError('read requires positive line and character limits.')
@@ -633,11 +651,14 @@ def main(argv=None):
         print(''.join(result), end='')
         print(json.dumps({'next_line': next_line if next_line <= len(lines) else None}), file=sys.stderr)
         return
+    cache_root, cache_fallback = writable_cache(args.cache_dir or local_paths()[1], args.cache_dir is not None)
+    cache = cache_root / args.profile / digest(str(vault))[:16]
     started = time.perf_counter()
     catalogue, text, changes = refresh(vault, cache)
     if args.command == 'index':
         available, required = eligible_and_required(catalogue, args.profile, config['profiles'].get(args.profile, {}), None, [])
         print(json.dumps({'vault': str(vault), 'notes': len(text), 'refresh': changes,
+                          'cache_dir': str(cache_root), 'cache_fallback': cache_fallback,
                           'required': required, 'categories': category_tree(catalogue, available)}, ensure_ascii=False))
         return
     task = args.task if args.task is not None else args.task_file.read_text(encoding='utf-8-sig')
@@ -681,11 +702,13 @@ def main(argv=None):
               'refresh': changes, 'mode': 'offline' if args.offline else 'jev', 'required_notes': required,
               'selected_notes': selected, 'returned_excerpts': returned, 'omitted_notes': omitted,
               'output_chars': len(output), 'max_chars': max_chars,
+              'cache_dir': str(cache_root), 'cache_fallback': cache_fallback,
               'elapsed_ms': round(1000 * (time.perf_counter() - started), 2),
               'metrics': metrics, 'full_originals': str(full_path)}
     atomic_json(request_dir / 'result.json', result)
     print(output, end='')
     print(json.dumps({'result': str(request_dir / 'result.json'), 'elapsed_ms': result['elapsed_ms'],
+                      'cache_dir': str(cache_root), 'cache_fallback': cache_fallback,
                       'output_chars': len(output), 'max_chars': max_chars,
                       'mode': result['mode'], 'api_calls': metrics['api_calls'], 'jev_usage': metrics['usage']}), file=sys.stderr)
 
