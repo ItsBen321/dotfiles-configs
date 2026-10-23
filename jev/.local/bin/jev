@@ -1,0 +1,8 @@
+#!/bin/sh
+# Keep the CLI in its own repository. Override for a different checkout location.
+jev_source=${JEV_SOURCE_DIR:-"$HOME/projects/jev"}
+if [ ! -f "$jev_source/bin/jev" ]; then
+    printf '%s\n' 'jev: clone the Jev CLI to ~/projects/jev, or set JEV_SOURCE_DIR to its checkout.' >&2
+    exit 6
+fi
+exec python3 "$jev_source/bin/jev" "$@"
