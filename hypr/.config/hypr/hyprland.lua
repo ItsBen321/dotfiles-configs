@@ -95,7 +95,7 @@ end)
 
 hl.window_rule({
 	match = { class = "spotify" },
-	workspace = 10,
+	workspace = 1,
 })
 hl.window_rule({
 	match = { class = "discord" },
