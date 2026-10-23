@@ -381,6 +381,16 @@ def evaluate(state, questions, config):
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RetrievalError('Cannot run Jev. Check the local jev_command or use --offline.') from error
         if proc.returncode:
+            # Preserve useful failure categories without echoing CLI text or secrets.
+            for diagnostic in [proc.stdout, proc.stderr]:
+                try:
+                    failure = json.loads(diagnostic)
+                except (ValueError, TypeError):
+                    continue
+                detail = failure.get('error') if isinstance(failure, dict) else None
+                kind = detail.get('type') if isinstance(detail, dict) else None
+                if kind in {'auth', 'storage'}:
+                    raise RetrievalError('Jev cannot access credentials in this process. If desktop authentication already works, use an authorized execution context with keyring access; otherwise run jev setup in a terminal.')
             raise RetrievalError('Jev failed. Check `jev auth status --json` and network access, or use --offline.')
         try:
             response = json.loads(proc.stdout)

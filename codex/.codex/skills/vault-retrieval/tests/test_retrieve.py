@@ -265,6 +265,17 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn('--retries', run.call_args.args[0])
         self.assertEqual(run.call_args.args[0][-3:], ['0', '--timeout', '20'])
 
+    def test_auth_failure_explains_process_access_without_echoing_secret(self):
+        for kind in ['auth', 'storage']:
+            with self.subTest(kind=kind):
+                failure = json.dumps({'error': {'type': kind, 'message': 'credential=fake-private-key'}})
+                fake = subprocess.CompletedProcess(['jev'], 1, failure, '')
+                with patch.object(r.subprocess, 'run', return_value=fake) as run, self.assertRaises(r.RetrievalError) as error:
+                    r.evaluate({'task': 'physics'}, {'q': {'type': 'noul'}}, {'jev_command': ['jev']})
+                self.assertIn('authorized execution context', str(error.exception))
+                self.assertNotIn('fake-private-key', str(error.exception))
+                self.assertEqual(run.call_count, 1)
+
     def test_read_continuation_and_long_line_error(self):
         self.write('Godot/Read.md', 'First line.\nSecond original line.\n' + 'x' * 150 + '\n')
         stdout, stderr = io.StringIO(), io.StringIO()

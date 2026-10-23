@@ -21,6 +21,8 @@ Explicit `--vault` takes priority, followed by the domain skill's vault environm
 
 For Jev, use the installed CLI and run `jev setup` locally to store the credential in its keyring. Authenticate separately on each desktop. This helper never stores the key. A CLI launcher with extra arguments can be configured with `configure --jev-command-json '["python3", "/path/to/jev.py"]'`. Use an absolute launcher path where possible. This setting is a JSON argument array, not a shell command; it must contain no secrets.
 
+Agent sandboxes may block the desktop keyring even when credentials are already configured. A failed sandboxed `jev auth status --json` does not establish that desktop setup is missing. Use an authorized execution context with keyring and network access for live retrieval when available; do not export keyring secrets into files to work around sandbox restrictions. The helper never escalates itself. If that context is unavailable, use the domain skill's local fallback. Authentication/storage failures report this distinction without echoing CLI diagnostic text.
+
 Without a CLI, the helper can call the documented TypeSafe HTTP API directly using `TYPESAFE_API_KEY` supplied by your local secret manager or process environment. This provides a standard-library alternative on desktops without the CLI. Only note descriptors (titles, author-written descriptions, use cases, search terms, headings) and the task are sent for ranking; the final passages are copied locally from originals.
 
 ## Easy disable and fallback
