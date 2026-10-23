@@ -84,7 +84,11 @@ local firefox = "firefox"
 hl.on("hyprland.start", function()
 	--   hl.exec_cmd(terminal)
 	--   hl.exec_cmd("nm-applet")
-	hl.exec_cmd("waybar & hyprpaper & flatpak run com.spotify.Client & flatpak run md.obsidian.Obsidian & discord") -- /home/ben/.local/bin/dynamic-wallpaper")
+	hl.exec_cmd("waybar")
+	hl.exec_cmd("hyprpaper")
+	hl.exec_cmd("flatpak run com.spotify.Client")
+	hl.exec_cmd("flatpak run md.obsidian.Obsidian")
+	hl.exec_cmd("gdbus wait --session --timeout 10000 org.kde.StatusNotifierWatcher && discord")
 end)
 
 -- window setups
