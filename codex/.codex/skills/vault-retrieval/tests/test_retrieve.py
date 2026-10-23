@@ -145,6 +145,23 @@ class RetrievalTests(unittest.TestCase):
             r.main(self.args('retrieve', '--profile', 'godot', '--vault', str(self.vault), '--task', 'physics', '--max-chars', '1000'))
         api.assert_not_called()
 
+    def test_default_budget_expands_for_full_large_project_note(self):
+        original = '# Space Game\n\n' + ('Mandatory project history.\n' * 2000)
+        self.write('Project Notes/Space Game.md', original)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            r.main(self.args('retrieve', '--profile', 'godot', '--vault', str(self.vault),
+                             '--project', 'Space Game', '--task', 'physics', '--offline'))
+        metadata = json.loads(stderr.getvalue())
+        self.assertGreater(metadata['max_chars'], 28000)
+        self.assertIn(original.rstrip(), stdout.getvalue())
+        self.assertLessEqual(len(stdout.getvalue()), metadata['max_chars'])
+        # An explicit limit still fails before incurring API usage.
+        with patch.object(r, 'evaluate') as api, self.assertRaises(r.RetrievalError):
+            r.main(self.args('retrieve', '--profile', 'godot', '--vault', str(self.vault),
+                             '--project', 'Space Game', '--task', 'physics', '--max-chars', '28000'))
+        api.assert_not_called()
+
     def test_disable_precedes_vault_and_network_access_and_can_reenable(self):
         with contextlib.redirect_stdout(io.StringIO()):
             r.main(self.args('configure', '--disable'))

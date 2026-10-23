@@ -85,7 +85,7 @@ Named project/concept notes are considered only with `--project`; an exact match
 
 ## Output and usage
 
-Default stdout is at most 28,000 characters, with full required notes and original excerpts of up to about 1,800 characters per selected note. At most eight optional notes are selected by default; adjust `--max-notes` and `--max-chars` for a specific task. Required content is never silently truncated: increase the budget if it exceeds the limit. Saved `full-notes.md` contains all selected originals, including those omitted from stdout by its budget.
+Default stdout starts with a 28,000-character budget, with full required notes and original excerpts of up to about 1,800 characters per selected note. The default budget automatically grows to fit all required originals plus bounded optional excerpts. At most eight optional notes are selected by default; adjust `--max-notes` for a specific task. Explicit `--max-chars` is a hard limit: required content that cannot fit fails before paid API calls and is never silently truncated. Stderr reports `output_chars` and `max_chars`; if an execution tool truncates the returned output, read required notes in chunks using `read --note` and its `next_line` continuation. Saved `full-notes.md` contains all selected originals, including those omitted from stdout by its budget.
 
 Stderr points to a local `result.json` containing selected/returned/omitted IDs, refresh information, end-to-end helper latency, API calls, and actual Jev input/output tokens. These metrics exclude Codex processing time and usage. The model defaults to `jev-1.13.0`; verify [current TypeSafe models](https://docs.typesafe.ai/models) when changing it. API contract: [HTTP API](https://docs.typesafe.ai/api).
 

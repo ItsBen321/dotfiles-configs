@@ -21,6 +21,7 @@ from pathlib import Path
 SKILL = Path(__file__).resolve().parents[1]
 SCHEMA = 1
 MODEL = 'jev-1.13.0'
+DEFAULT_MAX_CHARS = 28000
 GENERIC_TAGS = {'godot', 'gdscript', 'codex', 'game-design', 'gameplay', 'architecture'}
 
 
@@ -508,9 +509,19 @@ def excerpts(name, text, task, budget):
     return ''.join(f'\n[lines {line}-{line + block.count(chr(10))}]\n{block.rstrip()}\n' for line, block in sorted(chosen))
 
 
+def output_header(full_path):
+    return ('Vault guidance: full required notes, then selected original excerpts. Excerpts are not full-note reads.\n'
+            'Complete originals for this selection: ' + str(full_path) + '\n')
+
+
+def required_output_size(text, required, full_path):
+    return len(output_header(full_path)) + sum(
+        len(f'\n=== REQUIRED: {name} (full) ===\n{text[name].rstrip()}\n')
+        for name in required) + 600
+
+
 def render(text, required, selected, task, max_chars, full_path):
-    header = 'Vault guidance: full required notes, then selected original excerpts. Excerpts are not full-note reads.\n'
-    header += 'Complete originals for this selection: ' + str(full_path) + '\n'
+    header = output_header(full_path)
     full, output = [], [header]
     for name in required + selected:
         full.append(f'\n=== SOURCE: {name} (full) ===\n{text[name].rstrip()}\n')
@@ -565,7 +576,7 @@ def parser():
             child.add_argument('--include-note', action='append', default=[])
             child.add_argument('--offline', action='store_true', help='Explicit local search without any Jev call')
             child.add_argument('--max-notes', type=int, default=8)
-            child.add_argument('--max-chars', type=int, default=28000)
+            child.add_argument('--max-chars', type=int, help='Explicit hard output limit; by default, 28000 characters expanded to fit full required notes')
         elif command == 'read':
             child.add_argument('--note', required=True)
             child.add_argument('--start-line', type=int, default=1)
@@ -630,13 +641,18 @@ def main(argv=None):
                           'required': required, 'categories': category_tree(catalogue, available)}, ensure_ascii=False))
         return
     task = args.task if args.task is not None else args.task_file.read_text(encoding='utf-8-sig')
-    if not task.strip() or len(task.encode('utf-8')) > 12000 or not 0 <= args.max_notes <= 24 or args.max_chars < 1000:
+    if not task.strip() or len(task.encode('utf-8')) > 12000 or not 0 <= args.max_notes <= 24 or (args.max_chars is not None and args.max_chars < 1000):
         raise RetrievalError('Provide a nonempty task under 12 KB, max-notes 0-24, and max-chars >= 1000.')
     all_metrics = []
     for attempt in range(2):
         eligible, required = eligible_and_required(catalogue, args.profile, config['profiles'].get(args.profile, {}), args.project, args.include_note)
+        # Honor explicit limits. The default grows only for mandatory originals,
+        # retaining space for bounded optional excerpts; no required text is trimmed.
+        max_chars = args.max_chars if args.max_chars is not None else max(
+            DEFAULT_MAX_CHARS,
+            required_output_size(text, required, cache / 'requests' / ('0' * 32) / 'full-notes.md') + args.max_notes * 1800)
         # Fail before a paid lookup if mandatory originals cannot fit.
-        render(text, required, [], task, args.max_chars, cache / 'requests/full-notes.md')
+        render(text, required, [], task, max_chars, cache / 'requests/full-notes.md')
         if args.offline:
             selected, metrics = select_local(catalogue, eligible, task, args.max_notes)
         else:
@@ -659,16 +675,18 @@ def main(argv=None):
     request_dir = cache / 'requests' / uuid.uuid4().hex
     request_dir.mkdir(parents=True, mode=0o700)
     full_path = request_dir / 'full-notes.md'
-    output, full, returned, omitted = render(text, required, selected, task, args.max_chars, full_path)
+    output, full, returned, omitted = render(text, required, selected, task, max_chars, full_path)
     full_path.write_text(full, encoding='utf-8')
     result = {'profile': args.profile, 'vault': str(vault), 'catalogue_fingerprint': catalogue['fingerprint'],
               'refresh': changes, 'mode': 'offline' if args.offline else 'jev', 'required_notes': required,
               'selected_notes': selected, 'returned_excerpts': returned, 'omitted_notes': omitted,
-              'output_chars': len(output), 'elapsed_ms': round(1000 * (time.perf_counter() - started), 2),
+              'output_chars': len(output), 'max_chars': max_chars,
+              'elapsed_ms': round(1000 * (time.perf_counter() - started), 2),
               'metrics': metrics, 'full_originals': str(full_path)}
     atomic_json(request_dir / 'result.json', result)
     print(output, end='')
     print(json.dumps({'result': str(request_dir / 'result.json'), 'elapsed_ms': result['elapsed_ms'],
+                      'output_chars': len(output), 'max_chars': max_chars,
                       'mode': result['mode'], 'api_calls': metrics['api_calls'], 'jev_usage': metrics['usage']}), file=sys.stderr)
 
 
