@@ -338,6 +338,21 @@ hl.bind(
 	hl.dsp.exec_cmd("/home/ben/.local/bin/voice-dictation"),
 	{ description = "Toggle local voice dictation" }
 )
+hl.bind(
+	mainMod .. " + SHIFT + D",
+	hl.dsp.exec_cmd('"$HOME/.local/bin/voice-dictation" --agent'),
+	{ description = "Dictate a task for the background voice agent" }
+)
+hl.bind(
+	mainMod .. " + CTRL + SHIFT + D",
+	hl.dsp.exec_cmd('"$HOME/.local/bin/voice-dictation" --cancel-agent'),
+	{ description = "Cancel the background voice agent" }
+)
+hl.bind(
+	mainMod .. " + ALT + SHIFT + D",
+	hl.dsp.exec_cmd('"$HOME/.local/bin/voice-dictation" --confirm-agent'),
+	{ description = "Confirm the pending voice agent action" }
+)
 hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"))
 
 local closeWindowBind = hl.bind(mainMod .. " + W", hl.dsp.window.close())

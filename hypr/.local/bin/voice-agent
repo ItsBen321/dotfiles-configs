@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""Run voice tasks with Codex and learn machine facts after reporting results."""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+from dataclasses import dataclass
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+
+
+ASSETS = Path(__file__).resolve().parents[1] / "share/voice-agent"
+STOP = False
+DEFAULTS = {
+    "model": "", "codex_bin": "", "reasoning_effort": "medium",
+    "fast_mode": False, "skills_context_tokens": 512,
+    "task_timeout_seconds": 180, "memory_enabled": True,
+    "memory_reasoning_effort": "low", "memory_timeout_seconds": 45,
+    "memory_ttl_days": 30, "memory_max_entries": 80,
+    "memory_context_chars": 5000,
+}
+
+
+def private_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise ValueError(f"Private directory is not owned by this user: {path}")
+    path.chmod(0o700)
+    return path
+
+
+def atomic_json(path: Path, value: object) -> None:
+    fd, name = tempfile.mkstemp(prefix=".voice-agent-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def read_json(path: Path, default=None):
+    try:
+        if path.stat().st_size > 1_000_000:
+            return default
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+@dataclass
+class Paths:
+    runtime: Path
+    state: Path
+    config: Path
+    overlay: Path
+
+    @classmethod
+    def current(cls):
+        home = Path.home()
+        runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+        return cls(
+            runtime / f"voice-agent-{os.getuid()}",
+            Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state") / "voice-agent",
+            Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "voice-agent/config.toml",
+            runtime / f"voice-dictation-{os.getuid()}",
+        )
+
+    def prepare(self):
+        for path in (self.runtime, self.state, self.overlay):
+            private_dir(path)
+        private_dir(self.runtime / "work")
+
+
+def config_for(paths: Paths) -> dict:
+    config = dict(DEFAULTS)
+    # Keep only model selection from the coding configuration, not its MCP
+    # servers, hooks, sandbox policy, or expensive reasoning setting.
+    normal = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        config["model"] = tomllib.loads(normal.read_text()).get("model", "")
+    except (OSError, ValueError):
+        pass
+    if paths.config.exists():
+        overrides = tomllib.loads(paths.config.read_text())
+        unknown = overrides.keys() - DEFAULTS.keys()
+        if unknown:
+            raise ValueError(f"Unknown voice-agent settings: {', '.join(sorted(unknown))}")
+        config.update(overrides)
+    for key in ("reasoning_effort", "memory_reasoning_effort"):
+        if config[key] not in ("low", "medium", "high", "xhigh"):
+            raise ValueError(f"Invalid {key}")
+    for key in ("task_timeout_seconds", "memory_timeout_seconds", "memory_ttl_days",
+                "memory_max_entries", "memory_context_chars", "skills_context_tokens"):
+        if type(config[key]) is not int or not 1 <= config[key] <= 10000:
+            raise ValueError(f"Invalid {key}")
+    for key in ("memory_enabled", "fast_mode"):
+        if type(config[key]) is not bool:
+            raise ValueError(f"{key} must be true or false")
+    for key in ("model", "codex_bin"):
+        if not isinstance(config[key], str):
+            raise ValueError(f"{key} must be a string")
+    candidate = config["codex_bin"] or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+    config["codex_bin"] = str(Path(candidate).expanduser())
+    return config
+
+
+def process_start(pid: int) -> str:
+    try:
+        # The command name inside parentheses can itself contain spaces.
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return ""
+
+
+def active(path: Path) -> bool:
+    value = read_json(path, {})
+    return (isinstance(value, dict) and type(value.get("pid")) is int
+            and bool(value.get("start"))
+            and process_start(value["pid"]) == value["start"])
+
+
+def stop_active(path: Path) -> bool:
+    value = read_json(path, {})
+    if (not isinstance(value, dict) or type(value.get("pid")) is not int
+            or not value.get("start") or process_start(value["pid"]) != value["start"]):
+        return False
+    try:
+        os.kill(value["pid"], signal.SIGTERM)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+@contextmanager
+def task_lock(paths: Paths, name: str):
+    with (paths.runtime / f"{name}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        marker = paths.runtime / f"{name}.active.json"
+        atomic_json(marker, {"pid": os.getpid(), "start": process_start(os.getpid())})
+        try:
+            yield
+        finally:
+            marker.unlink(missing_ok=True)
+
+
+def visual(paths: Paths, state: str, title: str, detail: str) -> None:
+    def clean(text):
+        return " ".join(str(text).split())[:400]
+    # Same protocol as voice-dictation, with atomic replacement for readers.
+    fd, name = tempfile.mkstemp(prefix=".overlay-", dir=paths.overlay)
+    with os.fdopen(fd, "w") as stream:
+        stream.write("\t".join(map(clean, (state, title, detail))) + "\n")
+    os.replace(name, paths.overlay / "overlay.state")
+    pid_file = paths.overlay / "overlay.pid"
+    try:
+        pid = int(pid_file.read_text())
+        os.kill(pid, 0)
+        return
+    except (OSError, ValueError):
+        pass
+    overlay = Path(__file__).resolve().with_name("voice-dictation-overlay")
+    with (paths.overlay / "overlay.log").open("w") as log:
+        subprocess.Popen([str(overlay), str(paths.overlay)], stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, start_new_session=True)
+
+
+def report(paths: Paths, result: dict) -> None:
+    state, title = {
+        "completed": ("success", "Task completed"),
+        "failed": ("error", "Task failed"),
+        "needs_confirmation": ("confirmation", "Confirmation needed"),
+        "cancelled": ("cancelled", "Task cancelled"),
+    }[result["status"]]
+    atomic_json(paths.runtime / "last-result.json", result)
+    visual(paths, state, title, result["summary"])
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "--app-name=Voice agent", title, result["summary"]],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    print(json.dumps(result), flush=True)
+
+
+def host_id() -> str:
+    try:
+        machine = Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        machine = os.uname().nodename
+    return hashlib.sha256(f"{machine}:{os.getuid()}:{Path.home()}".encode()).hexdigest()[:24]
+
+
+def load_memory(paths: Paths, config: dict) -> dict:
+    data = read_json(paths.state / "memory.json", {})
+    if (not isinstance(data, dict) or data.get("host") != host_id() or data.get("version") != 1
+            or type(data.get("generation")) is not int):
+        return {"version": 1, "host": host_id(), "generation": 0, "entries": []}
+    cutoff = time.time() - config["memory_ttl_days"] * 86400
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        entries = []
+    data["entries"] = [entry for entry in entries if isinstance(entry, dict)
+                       and isinstance(entry.get("verified_at"), (int, float))
+                       and cutoff <= entry["verified_at"] <= time.time() + 60
+                       and all(isinstance(entry.get(k), str) for k in ("key", "fact", "command"))]
+    return data
+
+
+def relevant_memory(memory: dict, request: str, budget: int) -> list:
+    tokens = set(re.findall(r"[a-z0-9]+", request.lower())) - {
+        "the", "a", "an", "me", "some", "please", "open", "get", "to", "on", "my", "and",
+    }
+    def score(entry):
+        words = set(re.findall(r"[a-z0-9]+", (entry["key"] + " " + entry["fact"]).lower()))
+        return len(words & tokens), entry["verified_at"]
+    selected, size = [], 0
+    for entry in sorted(memory["entries"], key=score, reverse=True):
+        if score(entry)[0] == 0:
+            continue
+        hint = {k: entry[k] for k in ("key", "fact", "verified_at")}
+        hint["kind"] = entry.get("kind", "legacy_unverified_fact")
+        if hint["kind"] == "failed_approach":
+            hint["failed_command"] = entry["command"][:1200]
+        cost = len(json.dumps(hint))
+        if size + cost <= budget:
+            selected.append(hint)
+            size += cost
+        if len(selected) == 10:
+            break
+    return selected
+
+
+def codex_command(paths: Paths, config: dict, learning: bool) -> list[str]:
+    prefix = "memory" if learning else "result"
+    instructions = ASSETS / ("memory-instructions.md" if learning else "instructions.md")
+    command = [config["codex_bin"], "--no-daemon", "exec", "--ignore-user-config", "--ephemeral",
+               "--skip-git-repo-check", "--json", "--color", "never",
+               "--cd", str(paths.runtime / "work"),
+               "--output-schema", str(ASSETS / f"{prefix}.schema.json"),
+               "-c", "developer_instructions=" + json.dumps(instructions.read_text()),
+               "-c", "model_reasoning_effort=" + json.dumps(config[
+                   "memory_reasoning_effort" if learning else "reasoning_effort"]),
+               "-c", f"skills.max_context_tokens={1 if learning else config['skills_context_tokens']}",
+               "--disable", "apps", "--disable", "hooks"]
+    if config["fast_mode"] and not learning:
+        command += ["-c", 'service_tier="fast"']
+    if config["model"]:
+        command += ["--model", config["model"]]
+    if learning:
+        command += ["--sandbox", "read-only", "-c", 'approval_policy="never"',
+                    "--disable", "shell_tool", "--disable", "unified_exec",
+                    "--disable", "computer_use", "--disable", "browser_use"]
+    else:
+        command += ["--approve-for-me"]
+    return command + ["-"]
+
+
+def terminate_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    except ProcessLookupError:
+        pass
+
+
+def run_codex(paths: Paths, config: dict, payload: dict, learning: bool = False):
+    timeout = config["memory_timeout_seconds" if learning else "task_timeout_seconds"]
+    name = "memory" if learning else "task"
+    final, evidence, failed_commands = None, [], []
+    completed_turn = False
+    started = time.monotonic()
+    deadline = started + timeout
+    timing = {"started_at": time.time(), "events": [], "commands": [],
+              "model": config["model"], "fast_mode": config["fast_mode"] and not learning,
+              "timing_basis": "CLI event receipt; event spans can include buffering and are not exact command CPU/wall time"}
+    command_times = {}
+    with (paths.runtime / f"{name}.stderr.log").open("w") as errors, \
+            (paths.runtime / f"{name}.events.jsonl").open("w") as log:
+        process = subprocess.Popen(codex_command(paths, config, learning),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+                                   start_new_session=True)
+        successful = False
+        try:
+            prompt = json.dumps(payload).encode()
+            sent = 0
+            os.set_blocking(process.stdin.fileno(), False)
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                selector.register(process.stdin, selectors.EVENT_WRITE)
+                pending = b""
+                while selector.get_map():
+                    if STOP:
+                        raise InterruptedError("Task cancelled")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out after {timeout} seconds")
+                    for key, _ in selector.select(timeout=0.1):
+                        if key.fileobj is process.stdin:
+                            sent += os.write(process.stdin.fileno(), prompt[sent:sent + 65536])
+                            if sent == len(prompt):
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
+                            continue
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        pending += chunk
+                        if len(pending) > 2_000_000:
+                            raise ValueError("Codex event exceeds size limit")
+                        while b"\n" in pending:
+                            line, pending = pending.split(b"\n", 1)
+                            try:
+                                event = json.loads(line)
+                            except ValueError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
+                            elapsed = round(time.monotonic() - started, 4)
+                            event["voice_agent_elapsed_seconds"] = elapsed
+                            if log.tell() < 2_000_000:
+                                log.write(json.dumps(event) + "\n")
+                                log.flush()
+                            if event.get("type") == "turn.completed":
+                                completed_turn = True
+                                timing["usage"] = event.get("usage", {})
+                            item = event.get("item", {})
+                            if not isinstance(item, dict):
+                                continue
+                            kind = item.get("type")
+                            if len(timing["events"]) < 200:
+                                timing["events"].append({"type": event.get("type"), "item_type": kind,
+                                                         "elapsed_seconds": elapsed})
+                            if learning and kind in ("command_execution", "mcp_tool_call"):
+                                raise ValueError("Learning attempted to use an execution tool")
+                            if event.get("type") == "item.started" and kind == "command_execution":
+                                command_times[item.get("id", item.get("command"))] = elapsed
+                                visual(paths, "working", "Working", payload["request"])
+                            if event.get("type") != "item.completed":
+                                continue
+                            if kind == "agent_message":
+                                final = item.get("text")
+                            elif kind == "command_execution":
+                                command = item.get("command", "")
+                                command_started = command_times.pop(item.get("id", command), elapsed)
+                                timing["commands"].append({"elapsed_seconds": elapsed,
+                                                           "duration_seconds": round(elapsed - command_started, 4),
+                                                           "exit_code": item.get("exit_code")})
+                                if item.get("exit_code") == 0 and len(evidence) < 40:
+                                    evidence.append({"command": command[:4000],
+                                                     "output": item.get("aggregated_output", "")[:4000]})
+                                elif item.get("exit_code") != 0:
+                                    failed_commands.append({"command": command[:4000],
+                                                            "output": item.get("aggregated_output", "")[:2000],
+                                                            "exit_code": item.get("exit_code")})
+            # stdout can close before the process exits: retain the deadline.
+            while process.poll() is None:
+                if STOP:
+                    raise InterruptedError("Task cancelled")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out after {timeout} seconds")
+                time.sleep(0.05)
+            if process.returncode != 0 or not completed_turn or final is None:
+                raise ValueError(f"Codex did not finish successfully; see {name}.stderr.log")
+            result = json.loads(final)
+            successful = True
+            return result, evidence, failed_commands
+        finally:
+            if not successful:
+                terminate_group(process)
+            process.stdin.close()
+            process.stdout.close()
+            timing["total_seconds"] = round(time.monotonic() - started, 4)
+            timing["pending_commands"] = len(command_times)
+            atomic_json(paths.runtime / f"{name}.timing.json", timing)
+
+
+def validate_result(result: dict) -> dict:
+    if (not isinstance(result, dict)
+            or result.get("status") not in ("completed", "failed", "needs_confirmation")
+            or not isinstance(result.get("summary"), str) or not result["summary"].strip()
+            or not isinstance(result.get("invalid_memory_keys"), list)
+            or not all(isinstance(k, str) for k in result["invalid_memory_keys"])):
+        raise ValueError("Invalid task result from Codex")
+    result["summary"] = result["summary"][:1000]
+    return result
+
+
+def start_learning(paths: Paths, job: dict) -> None:
+    fd, name = tempfile.mkstemp(prefix="learn-", suffix=".json", dir=paths.runtime)
+    os.close(fd)
+    atomic_json(Path(name), job)
+    with (paths.runtime / "learning.log").open("w") as log:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "learn", name],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                         start_new_session=True, close_fds=True)
+
+
+def run_task(paths: Paths, config: dict, request: str, confirm: bool = False) -> int:
+    if not confirm and (not request.strip() or len(request) > 16000):
+        raise ValueError("Request must contain between 1 and 16000 characters")
+    job = None
+    with task_lock(paths, "task"):
+        confirmation_path = paths.runtime / "confirmation.json"
+        confirmation = None
+        if confirm:
+            pending = read_json(confirmation_path, {})
+            if (not isinstance(pending, dict) or pending.get("host") != host_id()
+                    or not isinstance(pending.get("created_at"), (int, float))
+                    or not 0 <= time.time() - pending["created_at"] <= 120
+                    or not all(isinstance(pending.get(k), str) for k in ("request", "proposal"))):
+                raise ValueError("No recent action is awaiting confirmation")
+            request = pending["request"]
+            confirmation = {"approved_action": pending["proposal"]}
+        confirmation_path.unlink(missing_ok=True)
+        stop_active(paths.runtime / "memory.active.json")
+        memory = load_memory(paths, config) if config["memory_enabled"] else {"entries": [], "generation": 0}
+        hints = relevant_memory(memory, request, config["memory_context_chars"])
+        visual(paths, "working", "Working", request)
+        try:
+            result, evidence, failures = run_codex(paths, config, {
+                "request": request, "cached_facts": hints, "confirmation": confirmation,
+                "environment": {"home": str(Path.home()), "desktop_launcher": str(Path(__file__).resolve()),
+                                "desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
+                                "session": os.environ.get("XDG_SESSION_TYPE", "")},
+            })
+            result = validate_result(result)
+            if config["memory_enabled"]:
+                job = {"request": request, "result": result, "evidence": evidence,
+                       "failed_commands": failures, "generation": memory.get("generation", 0),
+                       "known_keys": [e["key"] for e in hints]}
+        except InterruptedError:
+            result = {"status": "cancelled", "summary": "The running task was stopped.", "invalid_memory_keys": []}
+        except (OSError, ValueError, TimeoutError) as error:
+            result = {"status": "failed", "summary": str(error), "invalid_memory_keys": []}
+        if result["status"] == "needs_confirmation":
+            atomic_json(confirmation_path, {"host": host_id(), "created_at": time.time(),
+                                           "request": request, "proposal": result["summary"]})
+        # The user sees the result BEFORE even spawning the memory pass.
+        report(paths, result)
+    if job and not STOP:
+        try:
+            start_learning(paths, job)
+        except OSError as error:
+            print(f"Could not start background learning: {error}", file=sys.stderr)
+    return 0 if result["status"] == "completed" else 1
+
+
+SENSITIVE = re.compile(r"(?i)(sk-[a-z0-9_-]{12,}|bearer\s+\S+|(?:password|secret|token|api[_-]?key)\s*[=:]\s*\S+)")
+
+
+def merge_memory(paths: Paths, config: dict, job: dict, proposals: list) -> None:
+    with (paths.state / "memory.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        memory = load_memory(paths, config)
+        if memory.get("generation", 0) != job["generation"]:
+            return  # A user cleared the cache while this job was running.
+        invalid = set(job["result"]["invalid_memory_keys"]) & set(job["known_keys"])
+        observations = [f if isinstance(f, dict) else {"command": f, "output": "", "exit_code": None}
+                        for f in job["failed_commands"]]
+        failures = {f["command"] for f in observations}
+        entries = {e["key"]: e for e in memory["entries"]
+                   if e["key"] not in invalid and e["command"] not in failures}
+        context = " ".join(re.findall(r"[a-z0-9]+", job["request"].lower()))[:160]
+        for failure in observations:
+            command = failure["command"]
+            output = failure["output"]
+            if SENSITIVE.search(command + " " + output):
+                continue
+            key = "failed:" + hashlib.sha256(command.encode()).hexdigest()[:16]
+            entries[key] = {"key": key, "kind": "failed_approach", "command": command,
+                            "fact": f"During '{context}', this shell attempt exited {failure['exit_code']}. "
+                                    f"Observed: {' '.join(output.split())[:300] or 'no error output'}. "
+                                    "Do not repeat unchanged; check the cause. This does not prove every subcommand failed.",
+                            "verified_at": time.time()}
+        for proposal in proposals[:5]:
+            key, fact, index = (proposal.get(k) for k in ("key", "fact", "evidence_id"))
+            if (not isinstance(key, str) or key.startswith("failed:")
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9:._-]{1,79}", key)
+                    or not isinstance(fact, str) or not 1 <= len(fact) <= 600
+                    or type(index) is not int or not 0 <= index < len(job["evidence"])):
+                continue
+            command = job["evidence"][index]["command"]
+            # A shell returning zero after `app &` does not prove the app
+            # stayed alive. Require observable evidence, not just that status.
+            if not job["evidence"][index].get("output", "").strip():
+                continue
+            if SENSITIVE.search(fact + " " + command):
+                continue
+            entries[key] = {"key": key, "kind": "observed_fact", "fact": fact, "command": command,
+                            "verified_at": time.time()}
+        memory["entries"] = sorted(entries.values(), key=lambda e: e["verified_at"], reverse=True)[:config["memory_max_entries"]]
+        atomic_json(paths.state / "memory.json", memory)
+
+
+def learn(paths: Paths, config: dict, job_path: Path) -> int:
+    job = read_json(job_path)
+    job_path.unlink(missing_ok=True)
+    if not job or not config["memory_enabled"]:
+        return 0
+    os.nice(10)
+    with task_lock(paths, "memory"):
+        if active(paths.runtime / "task.active.json"):
+            return 0
+        # Persist observed failures before the optional model call so a new
+        # request interrupting that call cannot lose the negative evidence.
+        merge_memory(paths, config, job, [])
+        memory = load_memory(paths, config)
+        proposals = []
+        known_commands = {e["command"] for e in memory["entries"]}
+        novel = any(e["command"] not in known_commands for e in job["evidence"])
+        try:
+            if job["result"]["status"] == "completed" and novel:
+                result, _, _ = run_codex(paths, config, {
+                    "request": job["request"], "result": job["result"]["summary"],
+                    "cached_facts": [{"key": e["key"], "fact": e["fact"]} for e in memory["entries"]],
+                    "evidence": job["evidence"], "failed_attempts": job["failed_commands"],
+                }, learning=True)
+                if isinstance(result, dict) and isinstance(result.get("entries"), list):
+                    proposals = [p for p in result["entries"] if isinstance(p, dict)]
+        except InterruptedError:
+            return 0
+        except (OSError, ValueError, TimeoutError) as error:
+            print(f"Learning skipped: {error}", file=sys.stderr)
+        if not STOP:
+            merge_memory(paths, config, job, proposals)
+    return 0
+
+
+def launch_program(arguments: list[str]) -> int:
+    if arguments[:1] == ["--"]:
+        arguments = arguments[1:]
+    if not arguments:
+        raise ValueError("launch requires a program and optional arguments")
+    executable = shutil.which(arguments[0])
+    if not executable:
+        raise ValueError(f"Program is not installed: {arguments[0]}")
+    unit = f"voice-agent-app-{os.getpid()}-{time.monotonic_ns()}"
+    command = ["systemd-run", "--user", "--collect", "--quiet", "--service-type=exec", f"--unit={unit}"]
+    for key in ("WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "PULSE_SERVER"):
+        if key in os.environ:
+            command.append(f"--setenv={key}={os.environ[key]}")
+    result = subprocess.run(command + ["--", executable, *arguments[1:]],
+                            capture_output=True, text=True, timeout=10, check=False)
+    if result.returncode:
+        raise ValueError("Desktop launch failed: " + result.stderr.strip()[:600]
+                         + ". If desktop access was blocked by the sandbox, request automatic approval; do not weaken it.")
+    state = subprocess.run(["systemctl", "--user", "show", unit, "--property=ActiveState,MainPID"],
+                           capture_output=True, text=True, timeout=5, check=False)
+    properties = dict(line.split("=", 1) for line in state.stdout.splitlines() if "=" in line)
+    if state.returncode or properties.get("ActiveState") != "active" or properties.get("MainPID", "0") == "0":
+        raise ValueError(f"Application did not stay running; inspect journalctl --user -u {unit}")
+    print(json.dumps({"unit": unit, "pid": int(properties["MainPID"]), "state": "process_started",
+                      "verification": "Executable started in a persistent user service; playback/window state is not checked."}))
+    return 0
+
+
+def doctor(paths: Paths, config: dict) -> int:
+    print(f"Codex: {config['codex_bin']}")
+    print(f"Model: {config['model'] or 'CLI default'}; reasoning: {config['reasoning_effort']}")
+    print(f"Fast mode: {'requested' if config['fast_mode'] else 'not requested'}")
+    print(f"Memory: {paths.state / 'memory.json'}")
+    print(f"Config: {paths.config}")
+    print(f"Logs and last result: {paths.runtime}")
+    available = Path(config["codex_bin"]).is_file() or shutil.which(config["codex_bin"])
+    for tool in ("firefox", "steam", "hyprctl", "grim", "wtype", "ydotool"):
+        print(f"{tool}: {shutil.which(tool) or 'unavailable'}")
+    if available:
+        return subprocess.run([config["codex_bin"], "login", "status"], check=False).returncode
+    return 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run", help="Read a request from stdin, execute it, then learn")
+    run.add_argument("--text", help="Use this request instead of stdin")
+    sub.add_parser("cancel", help="Stop the active task and memory pass")
+    sub.add_parser("confirm", help="Approve the exact pending action within two minutes")
+    sub.add_parser("status", help="Exit 0 when a task is running; otherwise exit 1")
+    sub.add_parser("doctor", help="Check installation without running an agent")
+    memory = sub.add_parser("memory", help="Inspect or clear the private cache")
+    memory.add_argument("action", choices=("show", "clear"))
+    learner = sub.add_parser("learn", help=argparse.SUPPRESS)
+    learner.add_argument("job", type=Path)
+    launch = sub.add_parser("launch", help="Start an application in a persistent user service")
+    launch.add_argument("arguments", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.command == "launch":
+        return launch_program(args.arguments)
+    paths = Paths.current()
+    os.umask(0o077)
+    paths.prepare()
+    if args.command == "status":
+        return 0 if active(paths.runtime / "task.active.json") else 1
+    if args.command == "cancel":
+        stopped = stop_active(paths.runtime / "task.active.json")
+        stop_active(paths.runtime / "memory.active.json")
+        (paths.runtime / "confirmation.json").unlink(missing_ok=True)
+        return 0 if stopped else 1
+    config = config_for(paths)
+    if args.command == "doctor":
+        return doctor(paths, config)
+    if args.command == "memory":
+        if args.action == "clear":
+            stop_active(paths.runtime / "memory.active.json")
+            with (paths.state / "memory.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                data = load_memory(paths, config)
+                data.update(entries=[], generation=data.get("generation", 0) + 1)
+                atomic_json(paths.state / "memory.json", data)
+        else:
+            print(json.dumps(load_memory(paths, config), indent=2))
+        return 0
+    def request_stop(*_):
+        global STOP
+        STOP = True
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    if args.command == "learn":
+        return learn(paths, config, args.job)
+    if args.command == "confirm":
+        return run_task(paths, config, "", confirm=True)
+    request = args.text if args.text is not None else sys.stdin.read(16001)
+    return run_task(paths, config, request)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BlockingIOError:
+        print("Voice agent is busy", file=sys.stderr)
+        raise SystemExit(1)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f"voice-agent: {error}", file=sys.stderr)
+        raise SystemExit(1)

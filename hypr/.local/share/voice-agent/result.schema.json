@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {"type": "string", "enum": ["completed", "failed", "needs_confirmation"]},
+    "summary": {"type": "string"},
+    "invalid_memory_keys": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["status", "summary", "invalid_memory_keys"],
+  "additionalProperties": false
+}

@@ -17,31 +17,36 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 
 TICK_MS = 60
 OVERLAY_WIDTH = 600
-OVERLAY_HEIGHT = 104
+OVERLAY_HEIGHT = 164
 BAR_COUNT = 48
 TERMINAL_STATE_SECONDS = {
     "success": 1.6,
     "copied": 2.2,
     "error": 2.8,
+    "confirmation": 10.0,
+    "cancelled": 3.0,
 }
 STATE_COLORS = {
     "recording": (0.95, 0.55, 0.66),
     "transcribing": (0.54, 0.71, 0.98),
+    "working": (0.72, 0.62, 0.98),
     "success": (0.65, 0.89, 0.63),
     "copied": (0.98, 0.89, 0.69),
     "error": (0.98, 0.70, 0.53),
+    "confirmation": (0.98, 0.89, 0.69),
+    "cancelled": (0.78, 0.78, 0.80),
 }
 
 
 class Waveform(Gtk.DrawingArea):
     def __init__(self) -> None:
         super().__init__()
-        self.set_size_request(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        self.set_size_request(OVERLAY_WIDTH, 90)
         self.state = "recording"
         self.phase = 0.0
         self.levels: deque[float] = deque([0.06] * BAR_COUNT, maxlen=BAR_COUNT)
@@ -64,7 +69,7 @@ class Waveform(Gtk.DrawingArea):
                 for index, value in enumerate(values)
             ]
 
-        if self.state == "transcribing":
+        if self.state in {"transcribing", "working"}:
             return [
                 0.12 + 0.72 * ((math.sin(self.phase - index * 0.48) + 1.0) * 0.5) ** 2
                 for index in range(BAR_COUNT)
@@ -170,7 +175,16 @@ class VoiceOverlay:
         )
 
         self.waveform = Waveform()
-        self.window.add(self.waveform)
+        self.title_label = Gtk.Label()
+        self.detail_label = Gtk.Label()
+        self.detail_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.detail_label.set_max_width_chars(76)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.pack_start(self.title_label, False, False, 0)
+        box.pack_start(self.waveform, False, False, 0)
+        box.pack_start(self.detail_label, False, False, 0)
+        self.window.add(box)
+        self.last_raw_state = ""
         self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
         self._read_state(force=True)
         GLib.timeout_add(TICK_MS, self._tick)
@@ -196,13 +210,16 @@ class VoiceOverlay:
         if state not in STATE_COLORS:
             return
 
-        if state != self.state:
+        if raw != self.last_raw_state:
+            self.last_raw_state = raw
             self.state = state
             self.state_changed_at = time.monotonic()
             duration = TERMINAL_STATE_SECONDS.get(state)
             self.close_at = self.state_changed_at + duration if duration else None
 
         self.waveform.set_state(state)
+        self.title_label.set_text(parts[1] if len(parts) > 1 else state.title())
+        self.detail_label.set_text(parts[2] if len(parts) > 2 else "")
 
     def _recording_level(self) -> float:
         try:

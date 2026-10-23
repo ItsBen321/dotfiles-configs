@@ -1,11 +1,25 @@
 #!/usr/bin/env bash
 
 set -uo pipefail
+umask 077
+
+SCRIPT_DIR="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+AGENT_BIN="${VOICE_AGENT_BIN:-$SCRIPT_DIR/voice-agent}"
+MODE="${1:---dictate}"
+case "$MODE" in
+	--dictate | --agent) ;;
+	--cancel-agent) exec "$AGENT_BIN" cancel ;;
+	--confirm-agent) exec "$AGENT_BIN" confirm ;;
+	*) printf 'Usage: %s [--dictate|--agent|--cancel-agent|--confirm-agent]\n' "$0" >&2; exit 2 ;;
+esac
 
 SERVICE_NAME="voice-dictation-whisper.service"
 SERVER_URL="http://127.0.0.1:8178"
-WTYPE_BIN="/home/ben/.local/opt/voice-dictation/usr/bin/wtype"
-OVERLAY_BIN="/home/ben/.local/bin/voice-dictation-overlay"
+WTYPE_BIN="${VOICE_DICTATION_WTYPE_BIN:-$HOME/.local/opt/voice-dictation/usr/bin/wtype}"
+if [[ ! -x "$WTYPE_BIN" ]]; then
+	WTYPE_BIN="$(command -v wtype || true)"
+fi
+OVERLAY_BIN="$SCRIPT_DIR/voice-dictation-overlay"
 
 RUNTIME_ROOT="$(printenv XDG_RUNTIME_DIR 2>/dev/null || true)"
 if [[ -z "$RUNTIME_ROOT" ]]; then
@@ -14,6 +28,7 @@ fi
 
 STATE_DIR="$RUNTIME_ROOT/voice-dictation-$UID"
 PID_FILE="$STATE_DIR/recording.pid"
+MODE_FILE="$STATE_DIR/recording.mode"
 LOCK_FILE="$STATE_DIR/action.lock"
 AUDIO_FILE="$STATE_DIR/recording.wav"
 RECORD_LOG="$STATE_DIR/recording.log"
@@ -22,9 +37,14 @@ ERROR_LOG="$STATE_DIR/error.log"
 OVERLAY_STATE_FILE="$STATE_DIR/overlay.state"
 OVERLAY_PID_FILE="$STATE_DIR/overlay.pid"
 OVERLAY_LOG="$STATE_DIR/overlay.log"
+TIMING_FILE="$STATE_DIR/timing.jsonl"
 
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
+
+trace_timing() {
+	printf '{"stage":"%s","unix_seconds":%s}\n' "$1" "$(/usr/bin/date +%s.%N)" >>"$TIMING_FILE"
+}
 
 set_visual_state() {
 	local state="$1"
@@ -89,7 +109,19 @@ current_recording_pid() {
 }
 
 start_recording() {
+	if [[ "$MODE" == "--agent" && ! -x "$AGENT_BIN" ]]; then
+		set_visual_state "error" "Voice agent unavailable" "Check the voice-agent executable"
+		return 1
+	fi
+	# Both modes share a recorder and overlay. Keep a desktop task from
+	# competing with a second recording; background memory does not block it.
+	if [[ -x "$AGENT_BIN" ]] && "$AGENT_BIN" status >/dev/null 2>&1; then
+		/usr/bin/notify-send --app-name="Voice agent" "Agent is working" "Finish or cancel the current task before recording again"
+		return 1
+	fi
 	rm -f "$AUDIO_FILE" "$RECORD_LOG" "$RESPONSE_FILE" "$ERROR_LOG"
+	: >"$TIMING_FILE"
+	printf '%s\n' "$MODE" >"$MODE_FILE"
 
 	# Warm the model while the user speaks; this normally does nothing because
 	# the service starts with the desktop session and keeps the model loaded.
@@ -98,19 +130,30 @@ start_recording() {
 	/usr/bin/nohup /usr/bin/pw-record --media-type Audio --media-category Capture --media-role Communication --latency 50ms --rate 16000 --channels 1 --channel-map MONO --format s16 --container wav --quality 10 "$AUDIO_FILE" >"$RECORD_LOG" 2>&1 9>&- &
 	local pid=$!
 	printf '%s\n' "$pid" >"$PID_FILE"
+	trace_timing recording_started
 
 	sleep 0.2
 	if ! kill -0 "$pid" 2>/dev/null; then
-		rm -f "$PID_FILE"
+		rm -f "$PID_FILE" "$MODE_FILE"
 		set_visual_state "error" "Microphone unavailable" "Check the default audio input"
 		return 1
 	fi
 
-	set_visual_state "recording" "Recording" "Press MOD+D to finish"
+	if [[ "$MODE" == "--agent" ]]; then
+		set_visual_state "recording" "Recording a task" "Press MOD+Shift+D to finish"
+	else
+		set_visual_state "recording" "Recording" "Press MOD+D to finish"
+	fi
 }
 
 stop_and_transcribe() {
 	local pid="$1"
+	trace_timing stop_requested
+	# The starting shortcut owns the destination, even if another finishes it.
+	local destination="--dictate"
+	if [[ -r "$MODE_FILE" ]]; then
+		destination="$(<"$MODE_FILE")"
+	fi
 	kill -INT "$pid" 2>/dev/null || true
 
 	local i
@@ -125,7 +168,8 @@ stop_and_transcribe() {
 		kill -TERM "$pid" 2>/dev/null || true
 		sleep 0.1
 	fi
-	rm -f "$PID_FILE"
+	rm -f "$PID_FILE" "$MODE_FILE"
+	trace_timing recording_stopped
 
 	local audio_size=0
 	if [[ -f "$AUDIO_FILE" ]]; then
@@ -137,6 +181,7 @@ stop_and_transcribe() {
 	fi
 
 	set_visual_state "transcribing" "Transcribing" "Processing locally…"
+	trace_timing transcription_started
 	if ! wait_for_server; then
 		set_visual_state "error" "Service unavailable" "Check the local Whisper service"
 		return 1
@@ -146,6 +191,7 @@ stop_and_transcribe() {
 		set_visual_state "error" "Transcription failed" "See the local error log for details"
 		return 1
 	fi
+	trace_timing transcription_completed
 
 	local transcript
 	transcript="$(/usr/bin/jq --raw-output '.text // empty' "$RESPONSE_FILE" | /usr/bin/tr '\r\n' '  ' | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
@@ -171,6 +217,13 @@ stop_and_transcribe() {
 	if ((compact_length < 4)); then
 		set_visual_state "error" "Fragment too short" "Nothing was inserted"
 		return 1
+	fi
+
+	if [[ "$destination" == "--agent" ]]; then
+		trace_timing agent_dispatched
+		set_visual_state "working" "Starting voice agent" "$transcript"
+		printf '%s' "$transcript" | /usr/bin/nohup "$AGENT_BIN" run >"$STATE_DIR/agent-launch.log" 2>&1 9>&- &
+		return 0
 	fi
 
 	if printf '%s' "$transcript" | "$WTYPE_BIN" -d 1 -; then

@@ -1,0 +1,17 @@
+# Optional private overrides: ~/.config/voice-agent/config.toml
+# Model defaults to the model in your normal Codex config, or the CLI default.
+# model = "your-preferred-model"
+# codex_bin = "/path/to/codex"
+reasoning_effort = "medium"
+# Fast is a separate service tier and consumes more account usage when supported.
+fast_mode = false
+# Keep unrelated coding skill descriptions out of the desktop task context.
+skills_context_tokens = 512
+task_timeout_seconds = 180
+
+memory_enabled = true
+memory_reasoning_effort = "low"
+memory_timeout_seconds = 45
+memory_ttl_days = 30
+memory_max_entries = 80
+memory_context_chars = 5000
